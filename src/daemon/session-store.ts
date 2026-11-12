@@ -231,7 +231,14 @@ export async function openSessionStorage(
   }
 
   const storage = new SqliteStorage(path)
-  storage.driver.onLoad(db => db.exec('PRAGMA secure_delete = ON'))
+  storage.driver.onLoad(db => {
+    db.exec('PRAGMA secure_delete = ON')
+    // mtcute prepares statements it never finalizes, so its plain close() leaves the file open
+    // until they are garbage-collected. On Windows that open handle makes deleting or replacing
+    // session.db fail with EBUSY. close(true) finalizes them and really closes the file.
+    const bunDb = db as unknown as Database
+    bunDb.close = Database.prototype.close.bind(bunDb, true)
+  })
   return {
     driver: storage.driver,
     kv: storage.kv,
