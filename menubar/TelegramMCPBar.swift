@@ -50,7 +50,7 @@ struct UiSession: Decodable, Identifiable {
 
 struct UiApproval: Decodable, Identifiable {
     let id: String
-    /// "send", "edit" or "delete". Nil from a daemon older than edit and delete approvals: a send.
+    /// "send", "edit", "delete" or "create". Nil from a daemon older than edit and delete approvals: a send.
     let action: String?
     /// The message an edit or delete is for.
     let messageId: Int?
@@ -71,6 +71,8 @@ struct UiApproval: Decodable, Identifiable {
 
     var isEdit: Bool { action == "edit" }
     var isDelete: Bool { action == "delete" }
+    /// A new channel or supergroup (telegram_create_chat): `to` names it, `text` describes it. Only the user can approve it.
+    var isCreate: Bool { action == "create" }
     /// "message #123", for an edit or delete.
     var messageLabel: String { messageId.map { "message #\($0)" } ?? "a message" }
 }
@@ -594,6 +596,10 @@ final class Store: ObservableObject {
                 content.title = "Delete this Telegram message for everyone?"
                 content.subtitle = "\(a.messageLabel) in \(a.to)"
                 content.categoryIdentifier = "APPROVAL_DELETE"
+            } else if a.isCreate {
+                content.title = "Create this Telegram chat?"
+                content.subtitle = "\(a.to) (\(a.detail))"
+                content.categoryIdentifier = "APPROVAL_CREATE"
             }
             content.userInfo = ["approvalId": a.id]
             content.sound = .default
@@ -702,11 +708,13 @@ final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate {
         let edit = UNNotificationAction(identifier: "APPROVE", title: "Edit", options: [])
         let delete = UNNotificationAction(identifier: "APPROVE", title: "Delete", options: [.destructive])
         let keep = UNNotificationAction(identifier: "DENY", title: "Keep", options: [])
+        let create = UNNotificationAction(identifier: "APPROVE", title: "Create", options: [])
         center.setNotificationCategories([
             UNNotificationCategory(identifier: "APPROVAL", actions: [approve, deny], intentIdentifiers: [], options: []),
             UNNotificationCategory(identifier: "APPROVAL_NEW", actions: [askNext, always, deny], intentIdentifiers: [], options: []),
             UNNotificationCategory(identifier: "APPROVAL_EDIT", actions: [edit, deny], intentIdentifiers: [], options: []),
             UNNotificationCategory(identifier: "APPROVAL_DELETE", actions: [delete, keep], intentIdentifiers: [], options: []),
+            UNNotificationCategory(identifier: "APPROVAL_CREATE", actions: [create, deny], intentIdentifiers: [], options: []),
         ])
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
@@ -1104,6 +1112,7 @@ enum Lucide {
         "message-circle": "M7.9 20A9 9 0 1 0 4 16.1L2 22Z",
         "moon": "M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z",
         "pencil": "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z M15 5l4 4",
+        "plus": "M5 12h14 M12 5v14",
         "power": "M12 2v10 M18.4 6.6a9 9 0 1 1-12.77.04",
         "radio": "M4.9 19.1C1 15.2 1 8.8 4.9 4.9 M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5 M10,12 A2,2 0 1 0 14,12 A2,2 0 1 0 10,12 Z M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5 M19.1 4.9C23 8.8 23 15.1 19.1 19",
         "rotate-cw": "M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8 M21 3v5h-5",
@@ -1960,8 +1969,10 @@ struct ApprovalCard: View {
                 infoLine("pencil", "Edit \(item.messageLabel), which Claude sent earlier").padding(.top, 10)
             } else if item.isDelete {
                 infoLine("trash-2", "Delete \(item.messageLabel) for everyone in the chat").padding(.top, 10)
+            } else if item.isCreate {
+                infoLine("plus", "Create a new chat on your Telegram account").padding(.top, 10)
             }
-            message.padding(.top, item.isEdit || item.isDelete ? 6 : 10)
+            message.padding(.top, item.isEdit || item.isDelete || item.isCreate ? 6 : 10)
             infoLine("terminal", "Asked by \(item.sessionLabel)").padding(.top, 8)
             infoLine("info", item.reason).padding(.top, 3).help(item.reason)
             if item.firstTime { firstTime.padding(.top, 10) }
@@ -2009,9 +2020,12 @@ struct ApprovalCard: View {
         }
         .buttonStyle(.plain)
         .help(item.isEdit ? "The message as the chat sees it now, and the exact new text"
-              : item.isDelete ? "The message Claude wants to delete for everyone" : "The exact message Claude wants to send")
+              : item.isDelete ? "The message Claude wants to delete for everyone"
+              : item.isCreate ? "The chat Claude wants to create: type, name, username and discussion group"
+              : "The exact message Claude wants to send")
         .accessibilityLabel(Text(verbatim: item.isEdit ? "Now: \(item.previousText ?? ""). Will say: \(item.text)"
-                                 : item.isDelete ? "Message to delete: \(item.text)" : "Message: \(item.text)"))
+                                 : item.isDelete ? "Message to delete: \(item.text)"
+                                 : item.isCreate ? "Chat to create: \(item.text)" : "Message: \(item.text)"))
         .accessibilityHint(long ? Text(expanded ? "Shows less" : "Shows the whole message") : Text(verbatim: ""))
     }
 
@@ -2092,7 +2106,7 @@ struct ApprovalCard: View {
     }
 
     /// Deny, and Send for a chat that has a rule (a new chat's two ways to send are in its box above).
-    /// An edit offers Deny / Edit, a delete Keep / Delete.
+    /// An edit offers Deny / Edit, a delete Keep / Delete, a new chat Deny / Create.
     private var actions: some View {
         HStack(spacing: 8) {
             Spacer()
@@ -2120,6 +2134,18 @@ struct ApprovalCard: View {
                 }
                 .buttonStyle(Pill(tint: .white, fill: Palette.redFill))
                 .help("Delete the message for everyone in the chat now. It can\u{2019}t be undone.")
+            } else if item.isCreate {
+                Button("Deny") { Task { await store.decide(item.id, approve: false) } }
+                    .buttonStyle(Pill(tint: p.red))
+                    .help("Don\u{2019}t create it. Claude is told you said no.")
+                Button { Task { await store.decide(item.id, approve: true) } } label: {
+                    HStack(spacing: 6) {
+                        LucideIcon("plus", size: 13)
+                        Text(busy ? "Creating\u{2026}" : "Create")
+                    }
+                }
+                .buttonStyle(Pill(tint: .white, fill: Palette.greenFill))
+                .help("Create this chat on your account now, exactly as described")
             } else {
                 Button("Deny") { Task { await store.decide(item.id, approve: false) } }
                     .buttonStyle(Pill(tint: p.red))

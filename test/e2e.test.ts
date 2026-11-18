@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -95,7 +95,7 @@ describe('proxy <-> daemon', () => {
     const client = await spawnProxy()
     const { tools } = await client.listTools()
     expect(tools.map(t => t.name)).toContain('telegram_send_message')
-    expect(tools).toHaveLength(24)
+    expect(tools).toHaveLength(25)
     const inst = client.getInstructions() ?? ''
     expect(inst).toContain('Be brief.')
     const s = await call(client, 'telegram_status')
@@ -269,7 +269,7 @@ describe('proxy <-> daemon', () => {
   test('the session survives the daemon being down at first', async () => {
     await daemon.stop()
     const client = await spawnProxy()
-    expect((await client.listTools()).tools.length).toBe(24)
+    expect((await client.listTools()).tools.length).toBe(25)
     tg = new FakeTelegram().add(LEO, ANNA, TEAM_QA)
     daemon = await createDaemon({ paths, port, telegram: tg, log: silent })
     const s = await call(client, 'telegram_status')
@@ -334,6 +334,45 @@ describe('proxy <-> daemon', () => {
     const again = await ui(`/ui/approvals/${id}`, { method: 'POST', body: JSON.stringify({ decision: 'deny' }) })
     expect(again.status).toBe(409)
     await client.close()
+  })
+
+  test('creating a chat: the call waits for the menu bar, then makes the channel and its group', async () => {
+    const ui = (path: string, init?: RequestInit) =>
+      fetch(`http://127.0.0.1:${port}${path}`, { ...init, headers: { authorization: `Bearer ${daemon.token}`, 'content-type': 'application/json' } })
+    const original = readFileSync(paths.config, 'utf8')
+    writeFileSync(paths.config, JSON.stringify({ ...JSON.parse(original), chatCreation: { enabled: true } }))
+    const client = await spawnProxy()
+    try {
+      await until(async () => (await call(client, 'telegram_status')).text.includes('Creating chats: on'))
+      await ui('/ui/state')
+      const pending = call(client, 'telegram_create_chat', {
+        type: 'channel',
+        title: 'Acme News',
+        username: 'acme_news',
+        discussion: { kind: 'new' },
+      })
+      let card: { id: string; action: string; to: string; text: string } | undefined
+      await until(async () => {
+        const s = (await (await ui('/ui/state')).json()) as { approvals: { id: string; action: string; to: string; text: string }[] }
+        card = s.approvals.find(a => a.action === 'create')
+        return card !== undefined
+      })
+      expect(card!.text).toContain('t.me/acme_news')
+      expect(card!.text).toContain('Acme News Chat')
+      expect(tg.created).toHaveLength(0)
+      const res = await ui(`/ui/approvals/${card!.id}`, { method: 'POST', body: JSON.stringify({ decision: 'approve' }) })
+      expect(res.status).toBe(200)
+      const out = await pending
+      expect(out.isError).toBe(false)
+      expect(out.text).toContain('Created channel "Acme News"')
+      expect(out.text).toContain('https://t.me/acme_news')
+      expect(tg.created.map(c => c.type)).toEqual(['channel', 'supergroup'])
+      expect(tg.links).toHaveLength(1)
+    } finally {
+      writeFileSync(paths.config, original)
+      await until(async () => (await call(client, 'telegram_status')).text.includes('Creating chats: off'))
+      await client.close()
+    }
   })
 
   test('menu bar contacts: edits over http change what a session may do', async () => {

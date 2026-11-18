@@ -102,9 +102,11 @@ export interface TgEvent {
 
 /**
  * What waits for a yes: a new message, or an edit or delete of one a session sent, where sending
- * needs approval (the chat sees the change, so it needs the same yes as a send).
+ * needs approval (the chat sees the change, so it needs the same yes as a send). Or a new channel or
+ * supergroup (telegram_create_chat), which always waits, and only the menu bar or tray can approve.
+ * An app older than `create` shows it as a send: `to` and `text` describe the new chat in full.
  */
-export type ApprovalAction = 'send' | 'edit' | 'delete'
+export type ApprovalAction = 'send' | 'edit' | 'delete' | 'create'
 
 export interface ApprovalRequest {
   id: string
@@ -152,11 +154,14 @@ export interface SentRecord {
 
 export interface UiApproval {
   id: string
-  /** send: a new message (text). edit: messageId would change from previousText to text. delete: messageId, saying text, would go for everyone. */
+  /**
+   * send: a new message (text). edit: messageId would change from previousText to text. delete: messageId,
+   * saying text, would go for everyone. create: a new chat named in `to`, described in `text` (chatId 0).
+   */
   action: ApprovalAction
   messageId: number | null
   previousText: string | null
-  /** The chat it goes to, for its avatar (GET /ui/avatars/:chatId). */
+  /** The chat it goes to, for its avatar (GET /ui/avatars/:chatId). 0 for a create: the chat doesn't exist yet. */
   chatId: number
   to: string
   detail: string

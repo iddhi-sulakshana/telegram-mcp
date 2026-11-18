@@ -7,6 +7,12 @@ const chatRef = z
   .union([z.string().min(1), z.number().int()])
   .describe('A saved nickname or alias (e.g. "leo"), an @username, a numeric chat id, or "me" for Saved Messages.')
 
+/**
+ * A public Telegram username: 5 to 32 characters, letters, digits and underscores, starting with a
+ * letter, not ending with an underscore and never two in a row. An optional leading @ is allowed.
+ */
+export const USERNAME_RE = /^@?(?!.*__)[A-Za-z][A-Za-z0-9_]{3,30}[A-Za-z0-9]$/
+
 /** The kinds `telegram_list_chats` can filter by. */
 export const CHAT_KINDS = ['all', 'private', 'groups', 'channels', 'bots'] as const
 export type ChatKind = (typeof CHAT_KINDS)[number]
@@ -138,6 +144,30 @@ export const TOOLS = {
     input: z.object({
       chat: chatRef,
       title: z.string().min(1).max(128).describe('Topic name, e.g. a project name.'),
+    }),
+  },
+  telegram_create_chat: {
+    description:
+      'Create a new broadcast channel or supergroup on the user\'s account, optionally public (with a username) and, for a channel, with a discussion group (a new one, or an existing supergroup the user administers). Off unless the user turned it on (chatCreation.enabled in the rules file), and every create waits for the user to approve it in the menu bar or tray app; it cannot be approved in chat. The new chat is put on no list and saved under no nickname: save it with telegram_save_chat if the user wants to message it. If the username is taken or invalid, the chat is still created, as private, and the result says so.',
+    input: z.object({
+      type: z.enum(['channel', 'supergroup']).describe('"channel" = broadcast channel (only admins post), "supergroup" = group chat.'),
+      title: z.string().min(1).max(128).describe('Name of the new chat.'),
+      description: z.string().max(255).optional().describe('Shown on the chat\'s info page.'),
+      username: z
+        .string()
+        .regex(USERNAME_RE, 'A username is 5 to 32 letters, digits and underscores, starts with a letter, and does not end with or repeat an underscore.')
+        .optional()
+        .describe('Public username, without or with the @ (e.g. "acme_support" gives t.me/acme_support). Omit for a private chat.'),
+      discussion: z
+        .discriminatedUnion('kind', [
+          z.object({
+            kind: z.literal('new'),
+            title: z.string().min(1).max(128).optional().describe('Name of the new group. Defaults to "<title> Chat".'),
+          }),
+          z.object({ kind: z.literal('existing'), chat: chatRef.describe('A supergroup the user administers.') }),
+        ])
+        .optional()
+        .describe('Only for a channel: a group where subscribers can comment on posts.'),
     }),
   },
   telegram_list_topics: {

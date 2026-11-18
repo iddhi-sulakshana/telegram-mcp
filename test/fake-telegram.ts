@@ -127,6 +127,44 @@ export class FakeTelegram implements TelegramPort {
     return { id: topic.id }
   }
 
+  /** Chats made with createChat, in order, and their ids. */
+  created: { type: 'channel' | 'supergroup'; title: string; description?: string }[] = []
+  createdIds: number[] = []
+  /** Public usernames set with setChatUsername, by chat id. */
+  usernames = new Map<number, string>()
+  /** Usernames Telegram would say are taken. */
+  takenUsernames = new Set<string>()
+  /** Discussion groups linked to channels. */
+  links: { channelId: number; groupId: number }[] = []
+  /** When set, createChat / linkDiscussionGroup fail with this Telegram error. */
+  failCreate: string | null = null
+  failLink: string | null = null
+  #nextChannel = -1009000000000
+
+  async createChat(spec: { type: 'channel' | 'supergroup'; title: string; description?: string }): Promise<PeerInfo> {
+    if (this.failCreate) throw new Error(this.failCreate)
+    const peer: PeerInfo = { id: this.#nextChannel--, type: spec.type === 'channel' ? 'channel' : 'group', name: spec.title, username: null }
+    this.created.push(spec.description === undefined ? { type: spec.type, title: spec.title } : { ...spec })
+    this.createdIds.push(peer.id)
+    this.add(peer)
+    return peer
+  }
+
+  async setChatUsername(chatId: number, username: string): Promise<void> {
+    if (this.takenUsernames.has(username.toLowerCase())) throw new Error('USERNAME_OCCUPIED')
+    const peer = this.peers.get(chatId)
+    if (!peer || (peer.type !== 'channel' && peer.type !== 'group')) throw new Error('CHAT_INVALID')
+    this.usernames.set(chatId, username)
+    this.peers.set(chatId, { ...peer, username })
+  }
+
+  async linkDiscussionGroup(channelId: number, groupId: number): Promise<void> {
+    if (this.failLink) throw new Error(this.failLink)
+    if (this.peers.get(channelId)?.type !== 'channel') throw new Error('BROADCAST_ID_INVALID')
+    if (this.peers.get(groupId)?.type !== 'group') throw new Error('MEGAGROUP_ID_INVALID')
+    this.links.push({ channelId, groupId })
+  }
+
   /** What Telegram would say about who read which of your messages, keyed `${chatId}:${messageId}`. */
   readStatuses = new Map<string, ReadStatus>()
 
