@@ -337,8 +337,10 @@ describe('proxy <-> daemon', () => {
   })
 
   test('creating a chat: the call waits for the menu bar, then makes the channel and its group', async () => {
-    const ui = (path: string, init?: RequestInit) =>
-      fetch(`http://127.0.0.1:${port}${path}`, { ...init, headers: { authorization: `Bearer ${daemon.token}`, 'content-type': 'application/json' } })
+    // A menu bar or tray app new enough to show new-chat cards says so on every request.
+    const headers = { authorization: `Bearer ${daemon.token}`, 'content-type': 'application/json', 'x-tgmcp-features': 'create' }
+    const ui = (path: string, init?: RequestInit) => fetch(`http://127.0.0.1:${port}${path}`, { ...init, headers })
+    const oldApp = (path: string) => fetch(`http://127.0.0.1:${port}${path}`, { headers: { authorization: `Bearer ${daemon.token}` } })
     const original = readFileSync(paths.config, 'utf8')
     writeFileSync(paths.config, JSON.stringify({ ...JSON.parse(original), chatCreation: { enabled: true } }))
     const client = await spawnProxy()
@@ -357,6 +359,8 @@ describe('proxy <-> daemon', () => {
         card = s.approvals.find(a => a.action === 'create')
         return card !== undefined
       })
+      const seenByOldApp = (await (await oldApp('/ui/state')).json()) as { approvals: { action: string }[] }
+      expect(seenByOldApp.approvals.some(a => a.action === 'create')).toBe(false)
       expect(card!.text).toContain('t.me/acme_news')
       expect(card!.text).toContain('Acme News Chat')
       expect(tg.created).toHaveLength(0)

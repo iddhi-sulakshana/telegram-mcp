@@ -64,6 +64,8 @@ export type Remember = 'autoSend' | 'requireApproval'
 export interface DecideOptions {
   remember?: Remember
   nickname?: string
+  /** The menu bar or tray app deciding said it shows new-chat cards as such (UI_FEATURES_HEADER). */
+  uiCreate?: boolean
 }
 
 export interface Outcome {

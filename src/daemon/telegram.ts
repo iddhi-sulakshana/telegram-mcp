@@ -108,6 +108,7 @@ export function peerInfo(p: Peer): PeerInfo {
     name: p.displayName,
     username: p.username,
     isForum: p.isForum,
+    ...(p.chatType === 'group' ? { basicGroup: true } : {}),
   }
 }
 

@@ -311,6 +311,9 @@ final class Store: ObservableObject {
         var req = URLRequest(url: url, timeoutInterval: 4)
         req.httpMethod = method
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        // The newer approval kinds this app shows as such (UI_FEATURES_HEADER in src/shared/protocol.ts):
+        // without it the daemon keeps new-chat requests from it, since it would show one as a send.
+        req.setValue("create", forHTTPHeaderField: "X-Tgmcp-Features")
         if let body {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try? JSONSerialization.data(withJSONObject: body)
@@ -708,7 +711,7 @@ final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate {
         let edit = UNNotificationAction(identifier: "APPROVE", title: "Edit", options: [])
         let delete = UNNotificationAction(identifier: "APPROVE", title: "Delete", options: [.destructive])
         let keep = UNNotificationAction(identifier: "DENY", title: "Keep", options: [])
-        let create = UNNotificationAction(identifier: "APPROVE", title: "Create", options: [])
+        let create = UNNotificationAction(identifier: "APPROVE", title: "Create", options: [.authenticationRequired])
         center.setNotificationCategories([
             UNNotificationCategory(identifier: "APPROVAL", actions: [approve, deny], intentIdentifiers: [], options: []),
             UNNotificationCategory(identifier: "APPROVAL_NEW", actions: [askNext, always, deny], intentIdentifiers: [], options: []),

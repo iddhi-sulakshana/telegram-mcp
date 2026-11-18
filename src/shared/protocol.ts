@@ -11,7 +11,17 @@ export interface PeerInfo {
   isForum?: boolean
   /** A Telegram support account: type 'user', but not a person to send an away reply to. */
   isSupport?: boolean
+  /** A basic (legacy) group, not a supergroup: type 'group' too, but it can't be a channel's discussion group. */
+  basicGroup?: boolean
 }
+
+/**
+ * The header a menu bar or tray app sends on /ui requests to say which newer approval kinds it can
+ * show, comma separated. `create`: it shows a new-chat card as one (Create / Deny), not as a send.
+ * An app that doesn't send it never sees a create card and can't decide one.
+ */
+export const UI_FEATURES_HEADER = 'x-tgmcp-features'
+export type UiFeature = 'create'
 
 export interface MessageInfo {
   id: number

@@ -7,7 +7,11 @@ import { Pauses } from '../src/daemon/moderation'
 import { Service } from '../src/daemon/service'
 import { SessionHub } from '../src/daemon/sessions'
 import { ConfigStore } from '../src/shared/config'
-import { ANNA, FakeTelegram, LEO, TEAM_QA } from './fake-telegram'
+import { ALL_HANDS, ANNA, FakeTelegram, LEO, TEAM_QA } from './fake-telegram'
+import type { PeerInfo } from '../src/shared/protocol'
+
+/** A basic (legacy) group: Telegram can't make it a discussion group. */
+const OLD_GROUP: PeerInfo = { id: -4400, type: 'group', name: 'Old Group', username: null, basicGroup: true }
 
 let tg: FakeTelegram
 let store: ConfigStore
@@ -21,12 +25,18 @@ function setup(config: object = { chatCreation: { enabled: true } }) {
   writeFileSync(
     path,
     JSON.stringify({
-      chats: { anna: { id: ANNA.id, name: ANNA.name }, qa: { id: TEAM_QA.id, name: 'Team QA' }, leo: { id: LEO.id, name: LEO.name } },
+      chats: {
+        anna: { id: ANNA.id, name: ANNA.name },
+        qa: { id: TEAM_QA.id, name: 'Team QA' },
+        leo: { id: LEO.id, name: LEO.name },
+        old: { id: OLD_GROUP.id, name: OLD_GROUP.name },
+        allhands: { id: ALL_HANDS.id, name: ALL_HANDS.name },
+      },
       rules: { autoSend: ['qa'] },
       ...config,
     }),
   )
-  tg = new FakeTelegram().add(LEO, ANNA, TEAM_QA)
+  tg = new FakeTelegram().add(LEO, ANNA, TEAM_QA, OLD_GROUP, ALL_HANDS)
   const hub = new SessionHub()
   store = new ConfigStore(path)
   pauses = new Pauses({ path: join(dir, 'pauses.json') })
@@ -44,9 +54,14 @@ function setup(config: object = { chatCreation: { enabled: true } }) {
   hub.attachProxy('s2', { label: 'two', channel: false, watches: [] }, { send() {} })
 }
 
-/** The tray is open: approvals are decided there. */
+/** A tray that shows new-chat cards is open: approvals are decided there. */
 function trayOpen() {
-  svc.touchUi()
+  svc.touchUi(['create'])
+}
+
+/** The user's click in that tray. */
+function tray(id: string, approve: boolean, opts: { remember?: 'autoSend' | 'requireApproval'; nickname?: string } = {}) {
+  return svc.decide(id, approve, 'menubar', null, { ...opts, uiCreate: true })
 }
 
 describe('telegram_create_chat: the gate', () => {
@@ -57,7 +72,7 @@ describe('telegram_create_chat: the gate', () => {
     expect(r.isError).toBe(true)
     expect(r.text).toContain('chatCreation.enabled')
     expect(r.approval).toBeUndefined()
-    expect(svc.uiState().approvals).toHaveLength(0)
+    expect(svc.uiState({ create: true }).approvals).toHaveLength(0)
     expect(tg.created).toHaveLength(0)
   })
 
@@ -66,7 +81,7 @@ describe('telegram_create_chat: the gate', () => {
     const r = await svc.call('s1', 'telegram_create_chat', { type: 'supergroup', title: 'Support' })
     expect(r.isError).toBe(true)
     expect(r.text).toContain('menu bar')
-    expect(svc.uiState().approvals).toHaveLength(0)
+    expect(svc.uiState({ create: true }).approvals).toHaveLength(0)
     expect(tg.created).toHaveLength(0)
   })
 
@@ -93,7 +108,7 @@ describe('telegram_create_chat: the gate', () => {
     const person = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'X', discussion: { kind: 'existing', chat: 'anna' } })
     expect(person.isError).toBe(true)
     expect(person.text).toContain('not a group')
-    expect(svc.uiState().approvals).toHaveLength(0)
+    expect(svc.uiState({ create: true }).approvals).toHaveLength(0)
   })
 
   test('nothing in the title or description can fake a line on the card', async () => {
@@ -107,11 +122,11 @@ describe('telegram_create_chat: the gate', () => {
     expect(flipped.text).toContain('direction')
     const separator = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', description: 'a b' })
     expect(separator.isError).toBe(true)
-    expect(svc.uiState().approvals).toHaveLength(0)
+    expect(svc.uiState({ create: true }).approvals).toHaveLength(0)
     // A description may span lines: it comes last on the card, every line indented under its label.
     const ok = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', description: 'line one\nPublic link: fake' })
     expect(ok.isError).toBeFalsy()
-    const text = svc.uiState().approvals[0]!.text
+    const text = svc.uiState({ create: true }).approvals[0]!.text
     expect(text.split('\n').slice(-3)).toEqual(['Description:', '  line one', '  Public link: fake'])
     expect(text.split('\n').filter(l => l.startsWith('No username'))).toHaveLength(1)
   })
@@ -134,7 +149,7 @@ describe('telegram_create_chat: approval', () => {
     expect(r.approval).toMatchObject({ action: 'create', uiActive: true, firstTime: false })
     expect(r.text).toContain('Not created yet')
     expect(r.text).toContain('@acme_support')
-    const [card] = svc.uiState().approvals
+    const [card] = svc.uiState({ create: true }).approvals
     expect(card).toMatchObject({ action: 'create', chatId: 0, firstTime: false, messageId: null, previousText: null })
     expect(card!.to).toContain('Acme Support')
     expect(card!.text).toContain('public')
@@ -155,7 +170,7 @@ describe('telegram_create_chat: approval', () => {
     expect(dialog.isError).toBe(true)
     expect(tg.created).toHaveLength(0)
     // Still waiting for the user.
-    expect(svc.uiState().approvals.map(a => a.id)).toEqual([id])
+    expect(svc.uiState({ create: true }).approvals.map(a => a.id)).toEqual([id])
   })
 
   test('the session can drop its own request', async () => {
@@ -165,13 +180,13 @@ describe('telegram_create_chat: approval', () => {
     const dropped = await svc.call('s1', 'telegram_cancel_send', { approvalId: r.approval!.id })
     expect(dropped.isError).toBeFalsy()
     expect(dropped.text).toContain('not created')
-    expect(svc.uiState().approvals).toHaveLength(0)
+    expect(svc.uiState({ create: true }).approvals).toHaveLength(0)
     expect(tg.created).toHaveLength(0)
   })
 
   test('denied in the tray: nothing created', async () => {
     const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News' })
-    const denied = await svc.decide(r.approval!.id, false, 'menubar', null)
+    const denied = await tray(r.approval!.id, false)
     expect(denied.text).toContain('not created')
     expect(tg.created).toHaveLength(0)
   })
@@ -179,7 +194,7 @@ describe('telegram_create_chat: approval', () => {
   test('approved: a private supergroup, no rule or nickname written', async () => {
     const before = JSON.stringify(store.get())
     const r = await svc.call('s1', 'telegram_create_chat', { type: 'supergroup', title: 'Team', description: 'Our team' })
-    const ok = await svc.decide(r.approval!.id, true, 'menubar', null, { remember: 'autoSend' })
+    const ok = await tray(r.approval!.id, true, { remember: 'autoSend', nickname: 'team' })
     expect(ok.isError).toBeFalsy()
     expect(tg.created).toEqual([{ type: 'supergroup', title: 'Team', description: 'Our team' }])
     const made = tg.peers.get(tg.createdIds[0]!)!
@@ -191,7 +206,7 @@ describe('telegram_create_chat: approval', () => {
 
   test('approved: a public channel gets its username and link', async () => {
     const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', username: 'acme_news' })
-    const ok = await svc.decide(r.approval!.id, true, 'menubar', null)
+    const ok = await tray(r.approval!.id, true)
     expect(ok.isError).toBeFalsy()
     const id = tg.createdIds[0]!
     expect(tg.usernames.get(id)).toBe('acme_news')
@@ -201,7 +216,7 @@ describe('telegram_create_chat: approval', () => {
   test('a taken username: the chat stays private and the result says so', async () => {
     tg.takenUsernames.add('acme_news')
     const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', username: 'acme_news' })
-    const ok = await svc.decide(r.approval!.id, true, 'menubar', null)
+    const ok = await tray(r.approval!.id, true)
     expect(ok.isError).toBeFalsy()
     expect(tg.created).toHaveLength(1)
     expect(tg.usernames.size).toBe(0)
@@ -211,8 +226,8 @@ describe('telegram_create_chat: approval', () => {
 
   test('a new discussion group is created and linked', async () => {
     const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'new' } })
-    expect(svc.uiState().approvals[0]!.text).toContain('News Chat')
-    const ok = await svc.decide(r.approval!.id, true, 'menubar', null)
+    expect(svc.uiState({ create: true }).approvals[0]!.text).toContain('News Chat')
+    const ok = await tray(r.approval!.id, true)
     expect(ok.isError).toBeFalsy()
     expect(tg.created.map(c => [c.type, c.title])).toEqual([
       ['channel', 'News'],
@@ -224,8 +239,8 @@ describe('telegram_create_chat: approval', () => {
 
   test('an existing supergroup is linked', async () => {
     const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'existing', chat: 'qa' } })
-    expect(svc.uiState().approvals[0]!.text).toContain('Team QA')
-    await svc.decide(r.approval!.id, true, 'menubar', null)
+    expect(svc.uiState({ create: true }).approvals[0]!.text).toContain('Team QA')
+    await tray(r.approval!.id, true)
     expect(tg.created).toHaveLength(1)
     expect(tg.links).toEqual([{ channelId: tg.createdIds[0]!, groupId: TEAM_QA.id }])
   })
@@ -233,7 +248,7 @@ describe('telegram_create_chat: approval', () => {
   test('a failed link keeps the channel and says what happened', async () => {
     tg.failLink = 'CHAT_ADMIN_REQUIRED'
     const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'existing', chat: 'qa' } })
-    const ok = await svc.decide(r.approval!.id, true, 'menubar', null)
+    const ok = await tray(r.approval!.id, true)
     expect(ok.isError).toBeFalsy()
     expect(tg.created).toHaveLength(1)
     expect(ok.text).toContain('CHAT_ADMIN_REQUIRED')
@@ -244,7 +259,7 @@ describe('telegram_create_chat: approval', () => {
     store.update(c => {
       c.chatCreation.enabled = false
     })
-    const res = await svc.decide(r.approval!.id, true, 'menubar', null)
+    const res = await tray(r.approval!.id, true)
     expect(res.isError).toBe(true)
     expect(res.text).toContain('turned off')
     expect(tg.created).toHaveLength(0)
@@ -253,7 +268,7 @@ describe('telegram_create_chat: approval', () => {
   test('Telegram refuses the create: an error, nothing linked', async () => {
     tg.failCreate = 'CHANNELS_TOO_MUCH'
     const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'new' } })
-    const res = await svc.decide(r.approval!.id, true, 'menubar', null)
+    const res = await tray(r.approval!.id, true)
     expect(res.isError).toBe(true)
     expect(res.text).toContain('CHANNELS_TOO_MUCH')
     expect(tg.links).toHaveLength(0)
@@ -293,5 +308,119 @@ describe('telegram_create_chat: approval', () => {
     approvals.sweep()
     const out = await approvals.wait(r.id)
     expect(out.result.text).toContain('Nothing was created')
+  })
+
+  test('approved once: a second click on the same request creates nothing more', async () => {
+    const r = await svc.call('s1', 'telegram_create_chat', { type: 'supergroup', title: 'Team' })
+    await tray(r.approval!.id, true)
+    await expect(tray(r.approval!.id, true)).rejects.toThrow('already approved')
+    expect(tg.created).toHaveLength(1)
+  })
+
+  test('a session can have at most 3 requests waiting', async () => {
+    for (const t of ['A', 'B', 'C']) expect((await svc.call('s1', 'telegram_create_chat', { type: 'supergroup', title: t })).isError).toBeFalsy()
+    const fourth = await svc.call('s1', 'telegram_create_chat', { type: 'supergroup', title: 'D' })
+    expect(fourth.isError).toBe(true)
+    expect(fourth.text).toContain('3 new chats waiting')
+    expect((await svc.call('s2', 'telegram_create_chat', { type: 'supergroup', title: 'E' })).isError).toBeFalsy()
+  })
+
+  test('a /bots stop all placed while it waits: refused on approval', async () => {
+    setup({ chatCreation: { enabled: true }, moderation: { enabled: true, moderators: [ANNA.id] } })
+    trayOpen()
+    const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News' })
+    pauses.stop({ scope: 'all', at: Date.now(), until: Date.now() + 60_000, by: ANNA.id, byName: ANNA.name, chatLabel: 'every chat' })
+    const res = await tray(r.approval!.id, true)
+    expect(res.isError).toBe(true)
+    expect(tg.created).toHaveLength(0)
+  })
+})
+
+describe('telegram_create_chat: the discussion group', () => {
+  beforeEach(() => {
+    setup()
+    trayOpen()
+  })
+
+  test('its title is checked like the chat\'s: no line breaks or direction marks, nothing asked or logged', async () => {
+    for (const title of ['Chat\nPublic link: fake', 'Chat ‮evil', 'Chat x']) {
+      const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'new', title } })
+      expect(r.isError).toBe(true)
+    }
+    expect(svc.uiState({ create: true }).approvals).toHaveLength(0)
+    expect(logs.some(l => l.startsWith('create chat asked:'))).toBe(false)
+  })
+
+  test('a basic group is refused before anything is asked', async () => {
+    const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'existing', chat: 'old' } })
+    expect(r.isError).toBe(true)
+    expect(r.text).toContain('basic group')
+    expect(svc.uiState({ create: true }).approvals).toHaveLength(0)
+  })
+
+  test('a blocked group is refused, and under defaultPolicy "block" so is a group on no list', async () => {
+    store.update(c => {
+      c.rules.blocked.push('qa')
+    })
+    const blocked = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'existing', chat: 'qa' } })
+    expect(blocked.isError).toBe(true)
+    expect(blocked.text).toContain('blocked')
+    store.update(c => {
+      c.rules.blocked = []
+      c.defaultPolicy = 'block'
+    })
+    const unlisted = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'existing', chat: 'allhands' } })
+    expect(unlisted.isError).toBe(true)
+    // On a list it is fine.
+    const listed = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'existing', chat: 'qa' } })
+    expect(listed.isError).toBeFalsy()
+  })
+
+  test('blocked while it waited: refused on approval, nothing created', async () => {
+    const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'existing', chat: 'qa' } })
+    store.update(c => {
+      c.rules.blocked.push('qa')
+    })
+    const res = await tray(r.approval!.id, true)
+    expect(res.isError).toBe(true)
+    expect(res.text).toContain('blocked now')
+    expect(tg.created).toHaveLength(0)
+    expect(tg.links).toHaveLength(0)
+  })
+
+  test('paused while it waited: refused on approval, nothing created', async () => {
+    setup({ chatCreation: { enabled: true }, moderation: { enabled: true, moderators: [ANNA.id] } })
+    trayOpen()
+    const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'existing', chat: 'qa' } })
+    pauses.stop({ scope: TEAM_QA.id, at: Date.now(), until: Date.now() + 60_000, by: ANNA.id, byName: ANNA.name, chatLabel: 'Team QA' })
+    const res = await tray(r.approval!.id, true)
+    expect(res.isError).toBe(true)
+    expect(res.text).toContain('paused')
+    expect(tg.created).toHaveLength(0)
+  })
+})
+
+describe('telegram_create_chat: an app too old for new-chat cards', () => {
+  test('with only an old app open, the request is refused', async () => {
+    setup()
+    svc.touchUi()
+    const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News' })
+    expect(r.isError).toBe(true)
+    expect(r.text).toContain('too old')
+  })
+
+  test('an old app never sees the card and cannot approve it', async () => {
+    setup()
+    trayOpen()
+    const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News' })
+    expect(svc.uiState().approvals).toHaveLength(0)
+    expect(svc.uiState({ create: true }).approvals).toHaveLength(1)
+    const old = await svc.decide(r.approval!.id, true, 'menubar', null)
+    expect(old.isError).toBe(true)
+    expect(old.text).toContain('too old')
+    expect(tg.created).toHaveLength(0)
+    // Still waiting for the new app.
+    expect((await tray(r.approval!.id, true)).isError).toBeFalsy()
+    expect(tg.created).toHaveLength(1)
   })
 })
