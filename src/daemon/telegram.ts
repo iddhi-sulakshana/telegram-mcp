@@ -14,6 +14,7 @@ import type {
 import { downloadFileName, fmtBytes, type OutgoingFile } from '../shared/media'
 import type { Credentials } from '../shared/secrets'
 import { matchesChatKind, type ChatKind } from '../shared/tools'
+import { oneLine } from '../shared/text'
 import { SessionLockedError } from './session-store'
 
 export interface SendOptions {
@@ -53,6 +54,12 @@ export interface TelegramPort {
   listTopics(chatId: number): Promise<{ id: number; title: string }[]>
   /** Create a forum topic and return its id (the id of its first message). */
   createTopic(chatId: number, title: string): Promise<{ id: number }>
+  /** Create a broadcast channel or a supergroup owned by this account. */
+  createChat(spec: { type: 'channel' | 'supergroup'; title: string; description?: string }): Promise<PeerInfo>
+  /** Make a channel or supergroup this account owns public under `username` (no @). Throws if it is taken or invalid. */
+  setChatUsername(chatId: number, username: string): Promise<void>
+  /** Make a supergroup the discussion group of a channel. Both need this account as an admin with the right to change info. */
+  linkDiscussionGroup(channelId: number, groupId: number): Promise<void>
   /** Replace the text of one of your own text messages. */
   editMessage(chatId: number, messageId: number, text: string, opts?: { parseMode?: SendOptions['parseMode'] }): Promise<MessageInfo>
   getHistory(chatId: number, opts: { limit: number; beforeId?: number; topicId?: number }): Promise<MessageInfo[]>
@@ -102,7 +109,14 @@ export function peerInfo(p: Peer): PeerInfo {
     name: p.displayName,
     username: p.username,
     isForum: p.isForum,
+    ...(p.chatType === 'group' ? { basicGroup: true } : {}),
   }
+}
+
+/** The channel form of a resolved peer, for raw channels.* calls. */
+function inputChannel(p: tl.TypeInputPeer): tl.TypeInputChannel {
+  if (p._ === 'inputPeerChannel') return { _: 'inputChannel', channelId: p.channelId, accessHash: p.accessHash }
+  throw new Error('That chat is not a channel or supergroup.')
 }
 
 function safeSender(m: Message): PeerInfo | null {
@@ -125,7 +139,8 @@ function fileMeta(media: FileLocation & { type: string }): { name: string | null
 function mediaLabel(media: Message['media']): string | null {
   if (!media) return null
   if (!(media instanceof FileLocation)) return media.type
-  const detail = [fileMeta(media).name, media.fileSize ? fmtBytes(media.fileSize) : null].filter(Boolean).join(', ')
+  const name = fileMeta(media).name
+  const detail = [name ? oneLine(name) : null, media.fileSize ? fmtBytes(media.fileSize) : null].filter(Boolean).join(', ')
   return detail ? `${media.type}: ${detail}` : media.type
 }
 
@@ -502,6 +517,33 @@ export class MtcuteTelegram implements TelegramPort {
     const c = await this.#ready()
     const created = await c.createForumTopic({ chatId, title })
     return { id: created.id }
+  }
+
+  async createChat(spec: { type: 'channel' | 'supergroup'; title: string; description?: string }): Promise<PeerInfo> {
+    const c = await this.#ready()
+    const params = { title: spec.title, ...(spec.description ? { description: spec.description } : {}) }
+    const chat = spec.type === 'channel' ? await c.createChannel(params) : await c.createSupergroup(params)
+    return peerInfo(chat)
+  }
+
+  async setChatUsername(chatId: number, username: string): Promise<void> {
+    const c = await this.#ready()
+    await c.setChatUsername(chatId, username)
+  }
+
+  async linkDiscussionGroup(channelId: number, groupId: number): Promise<void> {
+    const c = await this.#ready()
+    const group = await c.getChat(groupId)
+    // Telegram links only supergroups; a basic group has to be upgraded first (Telegram does that when
+    // its owner makes it public or turns on topics, for example).
+    if (group.chatType !== 'supergroup' && group.chatType !== 'gigagroup') {
+      throw new Error(`${group.displayName} is a ${group.chatType}, not a supergroup, so it can't be a channel's discussion group.`)
+    }
+    await c.call({
+      _: 'channels.setDiscussionGroup',
+      broadcast: inputChannel(await c.resolvePeer(channelId)),
+      group: inputChannel(await c.resolvePeer(groupId)),
+    })
   }
 
   async editMessage(chatId: number, messageId: number, text: string, opts: { parseMode?: SendOptions['parseMode'] } = {}): Promise<MessageInfo> {

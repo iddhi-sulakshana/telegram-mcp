@@ -31,6 +31,11 @@ public static class ApprovalNotices
             $"Message #{a.MessageId} in {a.To}",
             a.Text,
             [new("Delete", NoticeAction.Approve), new("Keep", NoticeAction.Deny)])
+        : a.IsCreate ? new(
+            "Create Telegram chat?",
+            $"{a.To} ({a.Detail})",
+            a.Text,
+            [new("Create", NoticeAction.Approve), new("Deny", NoticeAction.Deny)])
         : SendContent(a);
 
     static Notice SendContent(UiApproval a) => new(

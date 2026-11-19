@@ -4,7 +4,7 @@ import type { PageAction } from './pager'
 import type { ServerWebSocket } from 'bun'
 import type { ConfigStore } from '../shared/config'
 import { SEND_MODES } from '../shared/contacts'
-import type { ClientMessage, SendMode, ServerMessage } from '../shared/protocol'
+import { UI_FEATURES_HEADER, type ClientMessage, type SendMode, type ServerMessage } from '../shared/protocol'
 import type { Service } from './service'
 import type { SessionHub } from './sessions'
 import type { TelegramPort } from './telegram'
@@ -27,6 +27,14 @@ export interface ServerOptions {
   avatars: AvatarCache
   log: (msg: string) => void
   startedAt: number
+}
+
+/** The newer approval kinds the calling menu bar or tray app can show (UI_FEATURES_HEADER). */
+function uiFeatures(req: Request): string[] {
+  return (req.headers.get(UI_FEATURES_HEADER) ?? '')
+    .split(',')
+    .map(f => f.trim().toLowerCase())
+    .filter(Boolean)
 }
 
 function sameToken(given: string | null, token: string): boolean {
@@ -102,8 +110,9 @@ export function startServer(o: ServerOptions) {
           : new Response('expected a websocket\n', { status: 400 })
       }
       if (url.pathname === '/ui/state' && req.method === 'GET') {
-        o.service.touchUi()
-        return Response.json(o.service.uiState())
+        const features = uiFeatures(req)
+        o.service.touchUi(features)
+        return Response.json(o.service.uiState({ create: features.includes('create') }))
       }
       const avatarFor = /^\/ui\/avatars\/(-?\d{1,20})$/.exec(url.pathname)
       if (avatarFor && req.method === 'GET') {
@@ -129,7 +138,8 @@ export function startServer(o: ServerOptions) {
           const remember = body.remember === 'autoSend' || body.remember === 'requireApproval' ? body.remember : undefined
           const nickname = typeof body.nickname === 'string' ? body.nickname : undefined
           try {
-            const r = await o.service.decide(decision[1]!, body.decision === 'approve', 'menubar', null, { remember, nickname })
+            const uiCreate = uiFeatures(req).includes('create')
+            const r = await o.service.decide(decision[1]!, body.decision === 'approve', 'menubar', null, { remember, nickname, uiCreate })
             return Response.json({ ok: !r.isError, text: r.text }, { status: r.isError ? 409 : 200 })
           } catch (e) {
             return Response.json({ ok: false, text: e instanceof Error ? e.message : String(e) }, { status: 409 })

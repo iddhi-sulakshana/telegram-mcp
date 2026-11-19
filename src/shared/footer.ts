@@ -29,9 +29,9 @@ export function footerOn(c: FooterState): boolean {
 }
 
 /** Control characters other than a line break: they'd show as boxes, or not at all. */
-const CONTROL = /[\u0000-\u0009\u000B-\u001F\u007F-\u009F]/u
+export const CONTROL = /[\u0000-\u0009\u000B-\u001F\u007F-\u009F]/u
 /** Direction overrides and marks: they can flip how the message above the footer reads. */
-const BIDI = /[؜‎‏‪-‮⁦-⁩]/u
+export const BIDI = /[؜‎‏‪-‮⁦-⁩]/u
 /** Characters that take no space: fine inside an emoji, but not all there is. */
 const INVISIBLE = /[\s­᠎​-‍⁠﻿]/gu
 
