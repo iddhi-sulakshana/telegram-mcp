@@ -351,6 +351,19 @@ describe('telegram_create_chat: the discussion group', () => {
     expect(logs.some(l => l.startsWith('create chat asked:'))).toBe(false)
   })
 
+  test("an existing group's title is checked the same way before it goes on the card", async () => {
+    const twoLines: PeerInfo = { id: -1009901, type: 'group', name: 'Group\nPublic link: https://t.me/x', username: null }
+    const flipped: PeerInfo = { id: -1009902, type: 'group', name: 'Group ‮evil', username: null }
+    tg.add(twoLines, flipped)
+    for (const peer of [twoLines, flipped]) {
+      const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'existing', chat: String(peer.id) } })
+      expect(r.isError).toBe(true)
+      expect(r.text).toContain('discussion group')
+    }
+    expect(svc.uiState({ create: true }).approvals).toHaveLength(0)
+    expect(logs.some(l => l.startsWith('create chat asked:'))).toBe(false)
+  })
+
   test('a basic group is refused before anything is asked', async () => {
     const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'existing', chat: 'old' } })
     expect(r.isError).toBe(true)

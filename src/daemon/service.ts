@@ -1559,6 +1559,10 @@ export class Service {
         discussion = { kind: 'new', title: p.discussion.title?.trim() || `${title} Chat`.slice(0, CHAT_TITLE_MAX) }
       } else if (p.discussion?.kind === 'existing') {
         const g = await this.#resolve(p.discussion.chat, true)
+        // The group's title comes from Telegram and goes on the card: the same check as a new title,
+        // before it goes into any message.
+        const groupUnsafe = createTextProblem('discussion group title', g.peer.name, false)
+        if (groupUnsafe) return fail(`Not created: ${groupUnsafe} Ask the user to rename the group in Telegram first.`)
         if (g.peer.type !== 'group') return fail(`Not created: ${g.label} is not a group, so it can't be the channel's discussion group.`)
         if (g.peer.basicGroup) {
           return fail(`Not created: ${g.label} is a basic group, and only a supergroup can be a channel's discussion group. Ask the user to upgrade it in Telegram first.`)
