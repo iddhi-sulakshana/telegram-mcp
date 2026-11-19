@@ -9,7 +9,7 @@ import { parseConfig } from '../shared/config'
 import { openSecretStore, readToken } from '../shared/secrets'
 import { LAUNCHD_LABEL, getPaths, getPort } from '../shared/paths'
 import type { ApprovalRequest, TgEvent, ToolResult } from '../shared/protocol'
-import { toolList } from '../shared/tools'
+import { isToolName, toolList } from '../shared/tools'
 import { DaemonClient } from './daemon-client'
 
 const VERSION = '0.1.0'
@@ -47,6 +47,7 @@ function dialogText(a: ApprovalRequest): string {
   if (a.action === 'delete') {
     return `Delete this Telegram message for everyone?\n\nIn: ${a.to} (message #${a.messageId})\n${why}\n\n${a.text}`
   }
+  if (a.action === 'create') return `Create this Telegram chat?\n\n${why}\n\n${a.text}`
   return `Send this Telegram message?\n\nTo: ${a.to}\n${why}${a.firstTime ? '\nFirst message to this chat.' : ''}\n\n${a.text}`
 }
 
@@ -150,7 +151,14 @@ export async function runProxy(opts: { channel: boolean }): Promise<void> {
       nickname: content.nickname,
     })
     if (answer.action === 'cancel' && !result.isError) {
-      const what = a.action === 'edit' ? 'The message was not edited.' : a.action === 'delete' ? 'The message was not deleted.' : 'Nothing was sent.'
+      const what =
+        a.action === 'edit'
+          ? 'The message was not edited.'
+          : a.action === 'delete'
+            ? 'The message was not deleted.'
+            : a.action === 'create'
+              ? 'Nothing was created.'
+              : 'Nothing was sent.'
       return { text: `The user dismissed the approval. ${what}` }
     }
     return result
@@ -159,6 +167,11 @@ export async function runProxy(opts: { channel: boolean }): Promise<void> {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: toolList() }))
 
   server.setRequestHandler(CallToolRequestSchema, async req => {
+    // Only the listed tools reach the daemon: its internal calls (the dialog's answer, the wait
+    // for the menu bar) are the proxy's own and must never come from the model.
+    if (!isToolName(req.params.name)) {
+      return { content: [{ type: 'text' as const, text: `Unknown tool: ${req.params.name}` }], isError: true }
+    }
     try {
       const { result: first, pending } = await daemon.call(req.params.name, req.params.arguments ?? {})
       const result = first.approval ? await approve(first.approval, first) : first

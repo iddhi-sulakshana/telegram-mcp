@@ -39,5 +39,8 @@
     "moderators": [1188107983, 1269534379],
     "defaultMinutes": 60,
     "maxMinutes": 1440
+  },
+  "chatCreation": {
+    "enabled": false
   }
 }
