@@ -27,6 +27,7 @@ import { looksLikeReplyCommand, parseReplyCommand } from '../shared/takeover'
 import { fmtMinutes, looksLikeBotsCommand, moderatorCommand, parseBotsCommand, stopMinutes } from '../shared/moderation'
 import type { IncomingMessage, MessageInfo, PeerInfo, SendMode, SentRecord, TgEvent, ToolResult, UiContact, UiModeration, UiPage, UiState } from '../shared/protocol'
 import { CHAT_KINDS, CHAT_TITLE_MAX, TOOLS, chatKindOf, isToolName, type ToolInput, type ToolName } from '../shared/tools'
+import { messageBody, oneLine, quoted } from '../shared/text'
 import { uiAway, type AwayResponder } from './away'
 import type { Approvals, CreateChatSpec, DecideOptions, PendingSend } from './approvals'
 import type { Pause, Pauses } from './moderation'
@@ -137,7 +138,7 @@ const fail = (text: string): ToolResult => ({ text, isError: true })
 const KIND_HEADINGS = { private: 'Private chats', groups: 'Groups', channels: 'Channels', bots: 'Bots' } as const
 
 export function fmtPeer(p: PeerInfo): string {
-  return [p.name, p.username ? `@${p.username}` : null, `id ${p.id}`, p.type, p.isForum ? 'forum' : null]
+  return [oneLine(p.name), p.username ? `@${p.username}` : null, `id ${p.id}`, p.type, p.isForum ? 'forum' : null]
     .filter(Boolean)
     .join(' · ')
 }
@@ -148,10 +149,10 @@ function clip(s: string, n: number): string {
 }
 
 export function fmtMessage(m: MessageInfo): string {
-  const who = m.outgoing ? 'me' : m.from ? (m.from.username ? `${m.from.name} (@${m.from.username})` : m.from.name) : 'unknown'
+  const who = m.outgoing ? 'me' : m.from ? oneLine(m.from.username ? `${m.from.name} (@${m.from.username})` : m.from.name) : 'unknown'
   const marks = [m.replyToId ? `reply to #${m.replyToId}` : null, m.topicId ? `topic ${m.topicId}` : null].filter(Boolean)
-  const body = [m.media ? `[${m.media}]` : null, m.text].filter(Boolean).join(' ') || '[empty]'
-  return `#${m.id} ${m.date.slice(0, 16).replace('T', ' ')} ${who}${marks.length ? ` (${marks.join(', ')})` : ''}: ${body}`
+  // Every line of the text is quoted, so none of it can pass for the next message's line.
+  return `#${m.id} ${m.date.slice(0, 16).replace('T', ' ')} ${who}${marks.length ? ` (${marks.join(', ')})` : ''}: ${quoted(messageBody(m.text, m.media, '[empty]'))}`
 }
 
 export function describeMessage(store: ConfigStore, msg: IncomingMessage): Omit<TgEvent, 'seq' | 'watchIds'> {

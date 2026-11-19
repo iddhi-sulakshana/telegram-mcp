@@ -10,6 +10,7 @@ import { openSecretStore, readToken } from '../shared/secrets'
 import { LAUNCHD_LABEL, getPaths, getPort } from '../shared/paths'
 import type { ApprovalRequest, TgEvent, ToolResult } from '../shared/protocol'
 import { toolList } from '../shared/tools'
+import { messageBody, oneLine, quoted } from '../shared/text'
 import { DaemonClient } from './daemon-client'
 
 const VERSION = '0.1.0'
@@ -53,9 +54,9 @@ function dialogText(a: ApprovalRequest): string {
 
 export function channelPayload(e: TgEvent) {
   const meta: Record<string, string> = {
-    chat: e.chatNickname ?? e.chatLabel,
+    chat: oneLine(e.chatNickname ?? e.chatLabel),
     chat_id: String(e.chatId),
-    from: e.fromName,
+    from: oneLine(e.fromName),
     message_id: String(e.messageId),
     watch_id: e.watchIds.join(','),
   }
@@ -63,7 +64,7 @@ export function channelPayload(e: TgEvent) {
   if (e.fromId !== null) meta.from_id = String(e.fromId)
   if (e.topicId !== null) meta.topic_id = String(e.topicId)
   if (e.replyToId !== null) meta.reply_to = String(e.replyToId)
-  if (e.media) meta.media = e.media
+  if (e.media) meta.media = oneLine(e.media)
   if (e.takeover) {
     meta.takeover = e.takeover.action
     return { content: formatEvent(e), meta }
@@ -73,7 +74,7 @@ export function channelPayload(e: TgEvent) {
     meta.moderation = e.moderation.action
     return { content: formatEvent(e), meta }
   }
-  return { content: e.text || (e.media ? `[${e.media}]` : '[empty message]'), meta }
+  return { content: quoted(messageBody(e.text, e.media, '[empty message]')), meta }
 }
 
 export async function runProxy(opts: { channel: boolean }): Promise<void> {
