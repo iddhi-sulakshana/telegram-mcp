@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -65,9 +65,9 @@ function nextFrame(ws: WebSocket, ms = 5_000): Promise<string> {
   })
 }
 
-function openWs(url: string): Promise<WebSocket> {
+function openWs(url: string, headers?: Record<string, string>): Promise<WebSocket> {
   return new Promise((res, rej) => {
-    const ws = new WebSocket(url)
+    const ws = new WebSocket(url, headers ? { headers } : undefined)
     ws.onopen = () => res(ws)
     ws.onerror = () => rej(new Error(`could not open ${url}`))
   })
@@ -95,7 +95,7 @@ describe('proxy <-> daemon', () => {
     const client = await spawnProxy()
     const { tools } = await client.listTools()
     expect(tools.map(t => t.name)).toContain('telegram_send_message')
-    expect(tools).toHaveLength(24)
+    expect(tools).toHaveLength(25)
     const inst = client.getInstructions() ?? ''
     expect(inst).toContain('Be brief.')
     const s = await call(client, 'telegram_status')
@@ -269,7 +269,7 @@ describe('proxy <-> daemon', () => {
   test('the session survives the daemon being down at first', async () => {
     await daemon.stop()
     const client = await spawnProxy()
-    expect((await client.listTools()).tools.length).toBe(24)
+    expect((await client.listTools()).tools.length).toBe(25)
     tg = new FakeTelegram().add(LEO, ANNA, TEAM_QA)
     daemon = await createDaemon({ paths, port, telegram: tg, log: silent })
     const s = await call(client, 'telegram_status')
@@ -336,6 +336,49 @@ describe('proxy <-> daemon', () => {
     await client.close()
   })
 
+  test('creating a chat: the call waits for the menu bar, then makes the channel and its group', async () => {
+    // A menu bar or tray app new enough to show new-chat cards says so on every request.
+    const headers = { authorization: `Bearer ${daemon.token}`, 'content-type': 'application/json', 'x-tgmcp-features': 'create' }
+    const ui = (path: string, init?: RequestInit) => fetch(`http://127.0.0.1:${port}${path}`, { ...init, headers })
+    const oldApp = (path: string) => fetch(`http://127.0.0.1:${port}${path}`, { headers: { authorization: `Bearer ${daemon.token}` } })
+    const original = readFileSync(paths.config, 'utf8')
+    writeFileSync(paths.config, JSON.stringify({ ...JSON.parse(original), chatCreation: { enabled: true } }))
+    const client = await spawnProxy()
+    try {
+      await until(async () => (await call(client, 'telegram_status')).text.includes('Creating chats: on'))
+      await ui('/ui/state')
+      const pending = call(client, 'telegram_create_chat', {
+        type: 'channel',
+        title: 'Acme News',
+        username: 'acme_news',
+        discussion: { kind: 'new' },
+      })
+      let card: { id: string; action: string; to: string; text: string } | undefined
+      await until(async () => {
+        const s = (await (await ui('/ui/state')).json()) as { approvals: { id: string; action: string; to: string; text: string }[] }
+        card = s.approvals.find(a => a.action === 'create')
+        return card !== undefined
+      })
+      const seenByOldApp = (await (await oldApp('/ui/state')).json()) as { approvals: { action: string }[] }
+      expect(seenByOldApp.approvals.some(a => a.action === 'create')).toBe(false)
+      expect(card!.text).toContain('t.me/acme_news')
+      expect(card!.text).toContain('Acme News Chat')
+      expect(tg.created).toHaveLength(0)
+      const res = await ui(`/ui/approvals/${card!.id}`, { method: 'POST', body: JSON.stringify({ decision: 'approve' }) })
+      expect(res.status).toBe(200)
+      const out = await pending
+      expect(out.isError).toBe(false)
+      expect(out.text).toContain('Created channel "Acme News"')
+      expect(out.text).toContain('https://t.me/acme_news')
+      expect(tg.created.map(c => c.type)).toEqual(['channel', 'supergroup'])
+      expect(tg.links).toHaveLength(1)
+    } finally {
+      writeFileSync(paths.config, original)
+      await until(async () => (await call(client, 'telegram_status')).text.includes('Creating chats: off'))
+      await client.close()
+    }
+  })
+
   test('menu bar contacts: edits over http change what a session may do', async () => {
     const ui = (path: string, init?: RequestInit) =>
       fetch(`http://127.0.0.1:${port}${path}`, { ...init, headers: { authorization: `Bearer ${daemon.token}`, 'content-type': 'application/json' } })
@@ -370,8 +413,8 @@ describe('proxy <-> daemon', () => {
   })
 
   test('a Monitor can connect before its proxy (right after a daemon restart)', async () => {
-    const url = `ws://127.0.0.1:${port}/events?session=s_early123&token=${daemon.token}`
-    const ws = await openWs(url)
+    const url = `ws://127.0.0.1:${port}/events?session=s_early123`
+    const ws = await openWs(url, { authorization: `Bearer ${daemon.token}` })
     expect(daemon.hub.has('s_early123')).toBe(true)
     ws.close()
   })
@@ -392,6 +435,18 @@ describe('proxy <-> daemon', () => {
     expect(status.status).toBe(401)
     await call(client, 'telegram_unwatch', { all: true })
     await client.close()
+  })
+
+  test('the token is only taken from the Authorization header, never from the URL', async () => {
+    const t = daemon.token
+    await expect(openWs(`ws://127.0.0.1:${port}/bridge?token=${t}`)).rejects.toThrow()
+    await expect(openWs(`ws://127.0.0.1:${port}/events?session=s_query123&token=${t}`)).rejects.toThrow()
+    expect((await fetch(`http://127.0.0.1:${port}/status?token=${t}`)).status).toBe(401)
+    expect((await fetch(`http://127.0.0.1:${port}/ui/state?token=${t}`)).status).toBe(401)
+    // The same token in the header works.
+    const ws = await openWs(`ws://127.0.0.1:${port}/bridge`, { authorization: `Bearer ${t}` })
+    ws.close()
+    expect((await fetch(`http://127.0.0.1:${port}/status`, { headers: { authorization: `Bearer ${t}` } })).status).toBe(200)
   })
 
   test('rejects requests without the token', async () => {

@@ -13,6 +13,11 @@ public class ApprovalCardTests
     static readonly UiApproval Send = Fixtures.DemoState().Approvals[0];
     static readonly UiApproval Edit = Send with { Action = "edit", MessageId = 1003, PreviousText = "old link", Text = "new link" };
     static readonly UiApproval Delete = Send with { Action = "delete", MessageId = 1004, Text = "the password" };
+    static readonly UiApproval Create = Send with
+    {
+        Action = "create", ChatId = 0, To = "new channel \"Acme News\"", Detail = "channel · public @acme_news",
+        Text = "Create a new public channel: \"Acme News\"\nPublic link: https://t.me/acme_news (@acme_news)",
+    };
 
     [Fact]
     public void Parses_an_edit_waiting()
@@ -94,5 +99,41 @@ public class ApprovalCardTests
         Assert.Equal("Message #1004 in Team QA [team-qa] · topic 42", n.Subtitle);
         Assert.Equal("the password", n.Body);
         Assert.Equal([new NoticeButton("Delete", NoticeAction.Approve), new NoticeButton("Keep", NoticeAction.Deny)], n.Buttons);
+    }
+
+    [Fact]
+    public void Parses_a_create_waiting()
+    {
+        var a = JsonSerializer.Deserialize<UiApproval>(
+            """{"id":"a_c","action":"create","messageId":null,"previousText":null,"chatId":0,"to":"new supergroup \"Team\"","detail":"supergroup · private","text":"Create a new private supergroup: \"Team\"","reason":"r","sessionId":"s","sessionLabel":"one","createdAt":"2026-11-05T07:00:00Z","expiresAt":"2026-11-05T07:20:00Z","firstTime":false,"nickname":null,"suggestedNickname":""}""",
+            Json.Options)!;
+
+        Assert.True(a.IsCreate);
+        Assert.False(a.IsEdit);
+        Assert.False(a.IsDelete);
+        Assert.Equal(0, a.ChatId);
+    }
+
+    [Fact]
+    public void A_create_card_offers_create_and_deny()
+    {
+        Assert.Equal("Create a new chat on your Telegram account", ApprovalCard.ChangeLine(Create));
+        Assert.Equal("Create", ApprovalCard.ApproveLabel(Create, busy: false));
+        Assert.Equal("Creating…", ApprovalCard.ApproveLabel(Create, busy: true));
+        Assert.Equal("plus", ApprovalCard.ApproveIcon(Create));
+        Assert.Equal("Deny", ApprovalCard.DenyLabel(Create));
+        Assert.Equal("Don't create it. Claude is told you said no.", ApprovalCard.DenyTip(Create));
+        Assert.False(Create.IsEdit || Create.IsDelete);
+    }
+
+    [Fact]
+    public void A_create_notice_describes_the_chat_with_create_and_deny()
+    {
+        var n = ApprovalNotices.Content(Create);
+
+        Assert.Equal("Create Telegram chat?", n.Title);
+        Assert.Equal("new channel \"Acme News\" (channel · public @acme_news)", n.Subtitle);
+        Assert.Contains("t.me/acme_news", n.Body);
+        Assert.Equal([new NoticeButton("Create", NoticeAction.Approve), new NoticeButton("Deny", NoticeAction.Deny)], n.Buttons);
     }
 }
