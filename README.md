@@ -117,11 +117,13 @@ Downloads go to `~/Downloads/telegram-mcp/<chat>/` (`TELEGRAM_MCP_DOWNLOADS`), n
 
 **/bots** from a moderator pauses Claude in a chat or everywhere; see [Moderator commands](#moderator-commands).
 
+**chatCreation** lets sessions ask to create channels and supergroups; it is off by default. See [Creating chats](#creating-chats).
+
 **/reply** hands one chat to the session that called `telegram_answer_reply`, for two hours or until `/reply stop`. Typing `/reply` in that chat counts as your approval, so the session's replies there go out without asking even when the chat is on `requireApproval`; `blocked` still refuses, and files still ask. Only a `/reply` you type on your phone or desktop counts: messages the daemon sent itself are ignored, and Claude cannot send a message that starts with `/reply`, formatted or not.
 
 **autoReply** chats are the ones Claude sessions may listen to. A session subscribes with `telegram_watch` and stays subscribed until it says stop. Every incoming message from that chat goes to every subscribed session, and each one decides how to reply (the auto reply happens on the Claude side). While subscribed, a session's replies to that chat go out without approval, unless the chat is also on `requireApproval` or `blocked`.
 
-**Files to a watched chat always ask**, even when the chat is on `autoSend`. While a session watches a chat it acts on what people there write, so "send me that file" may be their request, not yours. Text replies still follow the lists. Files to an `autoSend` chat that the session isn't watching go out without asking. Taking a chat off the list stops delivery at once.
+**Files always ask**, in every chat that isn't blocked, even on `autoSend`, in a watched chat or under a `/reply` takeover. A file can be anything on this machine, and "send me that file" may come from someone in a chat the session reads, not from you. Only you can approve a file, in the menu bar or tray app or in Claude Code's approval dialog; `telegram_confirm_send` can't. Text messages still follow the lists, and `blocked` still refuses. Deleting a file a session sent asks the same way. Taking a chat off the list stops delivery at once.
 
 **First message to a new chat.** A chat that is on neither `autoSend` nor `requireApproval` always needs approval. The approval also asks what should happen next time:
 - **Always allow** puts it on `autoSend`.
@@ -152,11 +154,12 @@ Nothing is sent unless you accept. Drafts expire after 20 minutes. The rules are
 | `telegram_send_message` | send, following the rules |
 | `telegram_delete_message` | delete a message this session sent recently, for everyone in the chat; same limits as edit (its own messages only; at once where sending needs no approval, after your approval where it does, refused where blocked), logged, can't be undone |
 | `telegram_edit_message` | change the text of a text message this session sent recently (chat and message id). The chat sees the new text, so it follows the sending rules: at once where sending needs no approval, after your approval where it does (you see the old and the new text), refused where blocked. Never another session's message, yours (the Page button's included), the pager's or an away reply. The footer is added again, Recently sent shows it as edited and keeps the original, and `daemon.log` has a line for each edit |
-| `telegram_send_file` | send a local file with a caption, following the same rules (but see files to watched chats, above); credentials and this tool's own files are always refused |
+| `telegram_send_file` | send a local file with a caption; it always waits for your approval (see files, above) and blocked chats refuse it; credentials (SSH keys, `.env` files, `.git-credentials`, cloud logins, `~/.claude` and `~/.claude.json`) and this tool's own files are always refused |
 | `telegram_send_sticker` | re-send a sticker someone posted (by chat and message id), following the same rules; stickers take no caption, so no footer |
 | `telegram_page` | page the user for something that needs a human now: the desktop rings until they ack, and the phone gets a push (see [Pages](#pages)) |
 | `telegram_list_topics` | list a forum group's topics (id and title), to find the one named after a project before watching it |
 | `telegram_create_topic` | create a forum topic in a group with topics on (needs the manage-topics right) and return its id for `topicId`; follows the sending rules but has no approval step, so it works only where sending is automatic and is refused elsewhere |
+| `telegram_create_chat` | create a broadcast channel or supergroup on your account, optionally public (`username`) and, for a channel, with a discussion group (a new one or an existing supergroup). Off by default (`chatCreation.enabled`), and every create waits for you in the menu bar or tray app, never in chat (see [Creating chats](#creating-chats)) |
 | `telegram_answer_reply` | make this session answer `/reply`: type `/reply` (or `/reply <what to say>`) in any chat from your own account and that chat is handed to the session; `/reply stop` takes it back |
 | `telegram_message_readers` | whether one of your own messages has been read: in a private chat whether the other person did, in a group of up to 100 people who did and when (about a week); only what Telegram shows, read-only |
 | `telegram_download_media` | save a message's file, photo, video or voice note and return the path |
@@ -252,6 +255,22 @@ tgmcp bots on | off         # obey moderator commands, or ignore them again (pau
 ```
 
 Typing `/bots resume` (or `/bots resume all`) yourself in a chat also lifts the pause on your account. Claude can't send or edit in a message that starts with `/bots`, so a moderator's own session can't be talked into posting one.
+
+## Creating chats
+
+`telegram_create_chat` creates a broadcast channel or a supergroup on your account. **It is off by default.** Turn it on in `config.json` (it applies as soon as you save):
+
+```jsonc
+"chatCreation": {
+  "enabled": false   // true lets sessions ask to create channels and supergroups; each one still waits for you
+}
+```
+
+- **You approve every create, in the menu bar or tray app.** The card and its notification show the type, the name, the description, the public link if there is one, and the discussion group, with **Deny** / **Create**. It can't be approved in the Claude Code dialog or in chat (`telegram_confirm_send` refuses it), and it is refused while the app isn't running. A menu bar or tray app older than this feature never sees the request (it would show it as a message to send), so update the app before you turn this on. A session can have at most 3 requests waiting. A session can drop its own request with `telegram_cancel_send`. Requests expire after 20 minutes like drafts.
+- **Public or private.** With `username` (5 to 32 letters, digits and underscores, starting with a letter) the chat gets `t.me/<username>`. If Telegram refuses the name (taken, or not allowed), the chat is still created, as private, and the result says why.
+- **Discussion group** (channels only): `{ "kind": "new" }` creates a supergroup called "<title> Chat" (or `title`) and links it; `{ "kind": "existing", "chat": "<nickname or id>" }` links a supergroup you administer. A blocked chat is never linked (with `defaultPolicy: "block"` that includes every group on none of your lists), and neither is a group a moderator paused; both are checked again when you approve. A basic group is refused: Telegram links only supergroups. If linking fails, the channel stays and the result says what happened.
+- **Nothing else changes.** The new chat is put on no list and saved under no nickname, so sending there follows `defaultPolicy` until you decide. Nothing is deleted or rolled back.
+- It is checked again when you approve: turned off meanwhile, or a moderator's `/bots stop all`, refuses it. `daemon.log` has a line for the ask and for what came of it, and `telegram_status` says whether it is on.
 
 ## Away auto-reply
 

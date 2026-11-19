@@ -47,6 +47,7 @@ function dialogText(a: ApprovalRequest): string {
   if (a.action === 'delete') {
     return `Delete this Telegram message for everyone?\n\nIn: ${a.to} (message #${a.messageId})\n${why}\n\n${a.text}`
   }
+  if (a.action === 'create') return `Create this Telegram chat?\n\n${why}\n\n${a.text}`
   return `Send this Telegram message?\n\nTo: ${a.to}\n${why}${a.firstTime ? '\nFirst message to this chat.' : ''}\n\n${a.text}`
 }
 
@@ -150,7 +151,14 @@ export async function runProxy(opts: { channel: boolean }): Promise<void> {
       nickname: content.nickname,
     })
     if (answer.action === 'cancel' && !result.isError) {
-      const what = a.action === 'edit' ? 'The message was not edited.' : a.action === 'delete' ? 'The message was not deleted.' : 'Nothing was sent.'
+      const what =
+        a.action === 'edit'
+          ? 'The message was not edited.'
+          : a.action === 'delete'
+            ? 'The message was not deleted.'
+            : a.action === 'create'
+              ? 'Nothing was created.'
+              : 'Nothing was sent.'
       return { text: `The user dismissed the approval. ${what}` }
     }
     return result

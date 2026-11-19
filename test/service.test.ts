@@ -837,7 +837,8 @@ describe('editing a sent message', () => {
   test('a file is refused: only text messages can be edited', async () => {
     const file = join(mkdtempSync(join(tmpdir(), 'tgmcp-')), 'report.pdf')
     writeFileSync(file, '%PDF-1.7 hello')
-    const sent = await svc.call('s1', 'telegram_send_file', { to: 'leo', path: file, caption: 'Q3' })
+    const asked = await svc.call('s1', 'telegram_send_file', { to: 'leo', path: file, caption: 'Q3' })
+    const sent = await svc.call('s1', '__decide', { approvalId: asked.approval!.id, approve: true })
     const id = Number(/message #(\d+)/.exec(sent.text)![1])
     const r = await svc.call('s1', 'telegram_edit_message', { chat: 'leo', messageId: id, text: 'new caption' })
     expect(r.isError).toBe(true)
@@ -855,6 +856,7 @@ describe('editing a sent message', () => {
     expect(tg.sent.length).toBe(before)
     const ok = await svc.call('s1', 'telegram_send_file', { to: 'leo', path: file, caption: 'x'.repeat(900) })
     expect(ok.isError).toBeFalsy()
+    expect(ok.approval).toBeDefined()
   })
 
   test('text that starts with /reply is refused', async () => {
@@ -1206,25 +1208,30 @@ describe('deleting a sent message', () => {
     expect(tg.deleted).toEqual([])
   })
 
-  test('a file the session sent can be deleted', async () => {
+  test('a file the session sent can be deleted, with the same yes a file needs', async () => {
     const file = join(mkdtempSync(join(tmpdir(), 'tgmcp-')), 'report.pdf')
     writeFileSync(file, '%PDF-1.7 hello')
-    const sent = await svc.call('s1', 'telegram_send_file', { to: 'leo', path: file, caption: 'Q3' })
+    const asked = await svc.call('s1', 'telegram_send_file', { to: 'leo', path: file, caption: 'Q3' })
+    const sent = await svc.call('s1', '__decide', { approvalId: asked.approval!.id, approve: true })
     const id = Number(/message #(\d+)/.exec(sent.text)![1])
-    expect((await svc.call('s1', 'telegram_delete_message', { chat: 'leo', messageId: id })).isError).toBeFalsy()
+    const r = await svc.call('s1', 'telegram_delete_message', { chat: 'leo', messageId: id })
+    expect(r.approval).toMatchObject({ action: 'delete', messageId: id })
+    expect(tg.deleted).toEqual([])
+    expect((await svc.call('s1', 'telegram_confirm_send', { approvalId: r.approval!.id })).isError).toBeFalsy()
     expect(tg.deleted).toEqual([{ chatId: LEO.id, messageId: id }])
   })
 
   test('a file in a chat the session watches follows the file rule and asks, a text message there does not', async () => {
     const file = join(mkdtempSync(join(tmpdir(), 'tgmcp-')), 'report.pdf')
     writeFileSync(file, '%PDF-1.7 hello')
-    const sent = await svc.call('s1', 'telegram_send_file', { to: 'leo', path: file, caption: 'Q3' })
+    const asked = await svc.call('s1', 'telegram_send_file', { to: 'leo', path: file, caption: 'Q3' })
+    const sent = await svc.call('s1', '__decide', { approvalId: asked.approval!.id, approve: true })
     const fileId = Number(/message #(\d+)/.exec(sent.text)![1])
     const textId = await sentId('leo')
     await svc.call('s1', 'telegram_watch', { chat: 'leo' })
     const r = await svc.call('s1', 'telegram_delete_message', { chat: 'leo', messageId: fileId })
     expect(r.isError).toBeFalsy()
-    expect(r.text).toContain('files to a chat this session is watching always need approval')
+    expect(r.text).toContain('files always need approval')
     expect(r.approval).toMatchObject({ action: 'delete', messageId: fileId })
     expect((await svc.call('s1', 'telegram_delete_message', { chat: 'leo', messageId: textId })).isError).toBeFalsy()
     expect(tg.deleted).toEqual([{ chatId: LEO.id, messageId: textId }])

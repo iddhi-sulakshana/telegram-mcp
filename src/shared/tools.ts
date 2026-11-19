@@ -7,6 +7,15 @@ const chatRef = z
   .union([z.string().min(1), z.number().int()])
   .describe('A saved nickname or alias (e.g. "leo"), an @username, a numeric chat id, or "me" for Saved Messages.')
 
+/**
+ * A public Telegram username: 5 to 32 characters, letters, digits and underscores, starting with a
+ * letter, not ending with an underscore and never two in a row. An optional leading @ is allowed.
+ */
+export const USERNAME_RE = /^@?(?!.*__)[A-Za-z][A-Za-z0-9_]{3,30}[A-Za-z0-9]$/
+
+/** Telegram's longest chat title. */
+export const CHAT_TITLE_MAX = 128
+
 /** The kinds `telegram_list_chats` can filter by. */
 export const CHAT_KINDS = ['all', 'private', 'groups', 'channels', 'bots'] as const
 export type ChatKind = (typeof CHAT_KINDS)[number]
@@ -102,7 +111,7 @@ export const TOOLS = {
   },
   telegram_delete_message: {
     description:
-      'Delete a message this session sent recently, for everyone in the chat (its telegram_send_message, send_file or send_sticker, a /reply answer, or a draft of its the user approved; the message id is in the send result). Deleting changes what the chat sees, so it follows the sending rules: where sending is automatic (auto-send, a watched autoReply chat, or a /reply takeover) it is deleted at once; where sending needs approval, the delete waits for the user to approve it the same way; blocked chats are refused. It cannot delete another session\'s messages, messages the user typed (including the Page button\'s), the pager\'s or away replies, or other people\'s messages. It cannot be undone, so use it only to take back something that should not be there, e.g. a wrong or private detail; for a small fix use telegram_edit_message. Each delete is logged.',
+      'Delete a message this session sent recently, for everyone in the chat (its telegram_send_message, send_file or send_sticker, a /reply answer, or a draft of its the user approved; the message id is in the send result). Deleting changes what the chat sees, so it follows the sending rules: where sending is automatic (auto-send, a watched autoReply chat, or a /reply takeover) a text message or sticker is deleted at once; where sending needs approval, and for a file anywhere, the delete waits for the user to approve it the same way; blocked chats are refused. It cannot delete another session\'s messages, messages the user typed (including the Page button\'s), the pager\'s or away replies, or other people\'s messages. It cannot be undone, so use it only to take back something that should not be there, e.g. a wrong or private detail; for a small fix use telegram_edit_message. Each delete is logged.',
     input: z.object({
       chat: chatRef,
       messageId: z.number().int().describe('Id of the message to delete.'),
@@ -110,7 +119,7 @@ export const TOOLS = {
   },
   telegram_send_file: {
     description:
-      'Send a local file (any type) with an optional caption. Same rules as telegram_send_message: auto-send chats get it now, others ask the user first, blocked chats are refused; the footer goes on the caption. A file to a chat this session is watching always asks the user first, even on auto-send. Credentials (SSH keys, .env files, cloud logins, this tool\'s own session) are always refused.',
+      'Send a local file (any type) with an optional caption. A file always asks the user first, in every chat, even on auto-send, and only the user can approve it, in the menu bar or tray app or the approval dialog (telegram_confirm_send cannot); blocked chats are refused; the footer goes on the caption. Credentials (SSH keys, .env files, git credentials, cloud logins, Claude Code\'s settings, this tool\'s own session) are always refused.',
     input: z.object({
       to: chatRef,
       path: z.string().min(1).describe('Absolute path of the file to send.'),
@@ -138,6 +147,30 @@ export const TOOLS = {
     input: z.object({
       chat: chatRef,
       title: z.string().min(1).max(128).describe('Topic name, e.g. a project name.'),
+    }),
+  },
+  telegram_create_chat: {
+    description:
+      'Create a new broadcast channel or supergroup on the user\'s account, optionally public (with a username) and, for a channel, with a discussion group (a new one, or an existing supergroup the user administers). Off unless the user turned it on (chatCreation.enabled in the rules file), and every create waits for the user to approve it in the menu bar or tray app; it cannot be approved in chat. The new chat is put on no list and saved under no nickname: save it with telegram_save_chat if the user wants to message it. If the username is taken or invalid, the chat is still created, as private, and the result says so.',
+    input: z.object({
+      type: z.enum(['channel', 'supergroup']).describe('"channel" = broadcast channel (only admins post), "supergroup" = group chat.'),
+      title: z.string().min(1).max(CHAT_TITLE_MAX).describe('Name of the new chat.'),
+      description: z.string().max(255).optional().describe('Shown on the chat\'s info page.'),
+      username: z
+        .string()
+        .regex(USERNAME_RE, 'A username is 5 to 32 letters, digits and underscores, starts with a letter, and does not end with or repeat an underscore.')
+        .optional()
+        .describe('Public username, without or with the @ (e.g. "acme_support" gives t.me/acme_support). Omit for a private chat.'),
+      discussion: z
+        .discriminatedUnion('kind', [
+          z.object({
+            kind: z.literal('new'),
+            title: z.string().min(1).max(CHAT_TITLE_MAX).optional().describe('Name of the new group. Defaults to "<title> Chat".'),
+          }),
+          z.object({ kind: z.literal('existing'), chat: chatRef.describe('A supergroup the user administers.') }),
+        ])
+        .optional()
+        .describe('Only for a channel: a group where subscribers can comment on posts.'),
     }),
   },
   telegram_list_topics: {

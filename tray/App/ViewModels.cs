@@ -169,13 +169,13 @@ public sealed class ApprovalVM : Observable
 
     public string Nick { get => _nick; set => Set(ref _nick, value); }
 
-    /// <summary>An edit or delete of a message Claude sent, rather than a new message.</summary>
-    public bool IsChange => Item.IsEdit || Item.IsDelete;
+    /// <summary>An edit or delete of a message Claude sent, or a new chat, rather than a new message.</summary>
+    public bool IsChange => Item.IsEdit || Item.IsDelete || Item.IsCreate;
     public bool IsEdit => Item.IsEdit;
     public bool IsDelete => Item.IsDelete;
     /// <summary>"Edit message #1003, which Claude sent earlier"; null for a send.</summary>
     public string? ChangeLine => ApprovalCard.ChangeLine(Item);
-    public string ChangeIcon => Item.IsEdit ? "pencil" : "trash-2";
+    public string ChangeIcon => Item.IsEdit ? "pencil" : Item.IsCreate ? "plus" : "trash-2";
     /// <summary>An edit: the text the chat sees now.</summary>
     public string PreviousText => Item.PreviousText ?? "";
     public string ApproveLabel => ApprovalCard.ApproveLabel(Item, _busy);

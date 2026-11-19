@@ -17,7 +17,7 @@ import {
 } from '../shared/config'
 import { listContacts, pageTarget, renameContact, setAutoReply, setPageFrom, setSendMode } from '../shared/contacts'
 import { applyAwayPatch, awaySummary } from '../shared/away'
-import { applyFooterPatch, footerOn, footerSummary, footerText } from '../shared/footer'
+import { BIDI, CONTROL, applyFooterPatch, footerOn, footerSummary, footerText } from '../shared/footer'
 import { decideSend, policyLabel, withFooter, withoutFooter } from '../shared/policy'
 import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -26,9 +26,9 @@ import { checkSendable, describeOutgoing, fileDigest, fmtBytes, safeFileName, ty
 import { looksLikeReplyCommand, parseReplyCommand } from '../shared/takeover'
 import { fmtMinutes, looksLikeBotsCommand, moderatorCommand, parseBotsCommand, stopMinutes } from '../shared/moderation'
 import type { IncomingMessage, MessageInfo, PeerInfo, SendMode, SentRecord, TgEvent, ToolResult, UiContact, UiModeration, UiPage, UiState } from '../shared/protocol'
-import { CHAT_KINDS, TOOLS, chatKindOf, isToolName, type ToolInput, type ToolName } from '../shared/tools'
+import { CHAT_KINDS, CHAT_TITLE_MAX, TOOLS, chatKindOf, isToolName, type ToolInput, type ToolName } from '../shared/tools'
 import { uiAway, type AwayResponder } from './away'
-import type { Approvals, DecideOptions, PendingSend } from './approvals'
+import type { Approvals, CreateChatSpec, DecideOptions, PendingSend } from './approvals'
 import type { Pause, Pauses } from './moderation'
 import { visibleText } from './formatting'
 import type { Page, PageAction, PageActor, Pager } from './pager'
@@ -59,6 +59,9 @@ export interface ServiceDeps {
   /** Moderator pauses ("/bots stop"). Absent = none can be in force. */
   pauses?: Pauses
 }
+
+/** New chats one session may have waiting for the user at once. */
+const MAX_WAITING_CREATES = 3
 
 /** At most one ack in a chat per this many ms, however often a moderator repeats a /bots command. */
 const MODERATION_ACK_GAP_MS = 60_000
@@ -174,6 +177,8 @@ type Handlers = { [N in ToolName]: (sessionId: string, p: ToolInput<N>) => Promi
 export class Service {
   #recent: SentRecord[] = []
   #uiSeen = 0
+  /** When an app that shows new-chat cards last polled. */
+  #uiCreateSeen = 0
   /** Messages the daemon sent itself (`chatId:id`), so their echo is never read as a /reply typed by the user. */
   #ownSent = new Set<string>()
   /** Sends still on the way, per chat: the echo can arrive before the send returns its id. */
@@ -277,13 +282,20 @@ export class Service {
 
   // ---- approvals, the sent log, the menu bar -------------------------------------------
 
-  touchUi(): void {
+  /** A menu bar or tray poll, with the newer approval kinds it can show (UI_FEATURES_HEADER). */
+  touchUi(features: readonly string[] = []): void {
     this.#uiSeen = Date.now()
+    if (features.includes('create')) this.#uiCreateSeen = this.#uiSeen
   }
 
   /** The menu bar app polls every 2 s; a few missed polls and approvals fall back to the dialog. */
   uiActive(): boolean {
     return Date.now() - this.#uiSeen < 10_000
+  }
+
+  /** A menu bar or tray app that shows new-chat cards as such is running. An older one can't approve creates. */
+  uiCanCreate(): boolean {
+    return Date.now() - this.#uiCreateSeen < 10_000
   }
 
   /**
@@ -432,10 +444,31 @@ export class Service {
     sessionId: string | null,
     opts: DecideOptions = {},
   ): Promise<ToolResult> {
+    // A new chat is approved only in the menu bar or tray. Refused here without taking the draft, so
+    // it keeps waiting there; dropping it (approve false) is fine from anywhere.
+    const waiting = this.d.approvals.peek(id)
+    if (waiting?.action === 'create' && approve && via !== 'menubar') {
+      return fail(
+        `Not created: the ${waiting.chatLabel} (${id}) can only be approved by the user in the menu bar or tray app, never in chat. It is still waiting there; call telegram_cancel_send if they want to drop it.`,
+      )
+    }
+    // An app that doesn't know new-chat cards would have shown it as a message to send.
+    if (waiting?.action === 'create' && approve && !opts.uiCreate) {
+      return fail(`Not created: this menu bar or tray app is too old to approve new chats. Update it, then approve the ${waiting.chatLabel} there.`)
+    }
+    // A file goes out only on a yes the user gave in the menu bar, the tray or the dialog, never on
+    // the model's word in chat: a watched chat could ask for one. Refused without taking the draft.
+    if (waiting?.file && waiting.action !== 'edit' && waiting.action !== 'delete' && approve && via === 'chat') {
+      return fail(
+        `Not sent: a file (${id}) can only be approved by the user in the menu bar or tray app, or in Claude Code's approval dialog, never in chat. Call telegram_cancel_send if they want to drop it.`,
+      )
+    }
     const item = this.d.approvals.take(id, sessionId)
     let result: ToolResult
     if (item.action === 'edit' || item.action === 'delete') {
       result = await this.#approvedChange(item, approve, via)
+    } else if (item.action === 'create') {
+      result = await this.#approvedCreate(item, approve, via)
     } else if (!approve) {
       result = { text: `Declined ${VIA_TEXT[via]}: the message to ${item.chatLabel} was not sent.` }
     } else {
@@ -657,17 +690,19 @@ export class Service {
    * sends and pages. GET /ui/avatars only fetches photos for these, so nothing else reaches Telegram.
    */
   uiChatIds(): Set<number> {
-    const s = this.uiState()
+    const s = this.uiState({ create: true })
     return new Set([
       ...s.contacts.map(c => c.chatId),
-      ...s.approvals.map(a => a.chatId),
+      // A chat to create doesn't exist yet: its card has no photo to fetch.
+      ...s.approvals.filter(a => a.action !== 'create').map(a => a.chatId),
       ...s.sessions.flatMap(x => x.watches.map(w => w.chatId)),
       ...s.recent.map(r => r.chatId),
       ...s.pages.flatMap(p => (p.chatId === null ? [] : [p.chatId])),
     ])
   }
 
-  uiState(): UiState {
+  /** `create`: the asking app shows new-chat cards as such; an older app never sees them. */
+  uiState(opts: { create?: boolean } = {}): UiState {
     const ttl = this.d.approvals.ttlMs
     const config = this.d.store.get()
     return {
@@ -681,7 +716,8 @@ export class Service {
       pages: (this.d.pager?.active() ?? []).map(uiPage),
       away: this.d.away?.ui() ?? uiAway(config, this.d.tg.state().me, new Date()),
       moderation: this.moderationState(),
-      approvals: this.d.approvals.list().map(a => {
+      // An app that doesn't know new-chat cards would show one as a message to send: it never gets one.
+      approvals: this.d.approvals.list().filter(a => opts.create || a.action !== 'create').map(a => {
         // An edit or delete shows the message as the chat sees it now (Recently sent has it; a file
         // there is already described), which an edit approved since the ask may have changed.
         const now = a.action ? this.#recent.find(r => r.chatId === a.chatId && r.messageId === a.messageId)?.text : undefined
@@ -806,7 +842,9 @@ export class Service {
           : null,
         uiActive
           ? 'It is waiting in the menu bar for the user to approve or deny. Only the user can approve it there: do not call telegram_confirm_send for it.'
-          : `Show the user this exact message and recipient. Only if they say yes, call telegram_confirm_send with the approval id; otherwise telegram_cancel_send.${firstTime ? ' Approving here saves the chat as "ask every time"; only the user can change that to "always allow", in the menu bar / tray app\'s Contacts page or config.json.' : ''}`,
+          : file
+            ? `A file is only sent with the user's yes in the menu bar or tray app, or in Claude Code's approval dialog; telegram_confirm_send can't approve it. Ask the user to open the menu bar or tray app (tgmcp menubar) and send it again, or call telegram_cancel_send.`
+            : `Show the user this exact message and recipient. Only if they say yes, call telegram_confirm_send with the approval id; otherwise telegram_cancel_send.${firstTime ? ' Approving here saves the chat as "ask every time"; only the user can change that to "always allow", in the menu bar / tray app\'s Contacts page or config.json.' : ''}`,
       ]
         .filter(line => line !== null)
         .join('\n'),
@@ -926,6 +964,84 @@ export class Service {
     }
     this.d.log?.(`${action}: ${changeLogLine(item)}, approved ${VIA_TEXT[via]}`)
     return { text: `Approved ${VIA_TEXT[via]}. ${action === 'edit' ? 'Edited' : 'Deleted'} message #${messageId} in ${item.chatLabel}.` }
+  }
+
+  /**
+   * An approved telegram_create_chat. Checked again first: the user may have turned it off, or a
+   * moderator paused every chat, while it waited. Once the chat exists, a username or discussion group
+   * that fails is reported, never rolled back: deleting a chat is the user's call.
+   */
+  async #approvedCreate(item: PendingSend, approve: boolean, via: 'menubar' | 'dialog' | 'chat'): Promise<ToolResult> {
+    const spec = item.create!
+    const what = createLogLine(spec)
+    if (!approve) {
+      this.d.log?.(`create chat declined ${VIA_TEXT[via]}: ${what}`)
+      return { text: `Declined ${VIA_TEXT[via]}: the ${item.chatLabel} was not created.` }
+    }
+    if (!this.d.store.get().chatCreation.enabled) {
+      this.d.log?.(`create chat refused after approval (turned off): ${what}`)
+      return fail(`Not created: creating chats was turned off (chatCreation.enabled) while the ${item.chatLabel} waited.`)
+    }
+    const paused = this.#pauseRefusal(0, 'every chat', 'Not created')
+    if (paused) return paused
+    // An existing discussion group: blocked or paused while the request waited means it isn't touched.
+    if (spec.discussion?.kind === 'existing') {
+      const { chatId, label } = spec.discussion
+      const groupPaused = this.#pauseRefusal(chatId, label, 'Not created')
+      if (groupPaused) return groupPaused
+      const rule = decideSend(this.d.store.get(), { id: chatId, username: null }, { isWatching: false })
+      if (rule.action === 'block') {
+        this.d.log?.(`create chat refused after approval (discussion group ${chatId}: ${rule.reason}): ${what}`)
+        return fail(`Not created: the discussion group ${label} is blocked now (${rule.reason}), so it won't be linked.`)
+      }
+    }
+    let chat: PeerInfo
+    try {
+      chat = await this.d.tg.createChat({ type: spec.type, title: spec.title, description: spec.description })
+    } catch (e) {
+      this.d.log?.(`create chat failed after approval: ${what}: ${errText(e)}`)
+      return fail(`Approved ${VIA_TEXT[via]}, but Telegram did not create the ${item.chatLabel}: ${errText(e)}`)
+    }
+    const lines = [`Approved ${VIA_TEXT[via]}. Created ${spec.type} "${chat.name}" (id ${chat.id}).`]
+    const warnings: string[] = []
+    if (spec.username) {
+      try {
+        await this.d.tg.setChatUsername(chat.id, spec.username)
+        lines.push(`Public: https://t.me/${spec.username} (@${spec.username}).`)
+      } catch (e) {
+        warnings.push(`@${spec.username} was not set (${errText(e)}), so the ${spec.type} is private. The user can give it another username in Telegram.`)
+      }
+    } else {
+      lines.push('It is private: people join with an invite link from Telegram.')
+    }
+    if (spec.discussion) {
+      let group: string | null = null
+      try {
+        let groupId: number
+        if (spec.discussion.kind === 'new') {
+          const g = await this.d.tg.createChat({ type: 'supergroup', title: spec.discussion.title })
+          groupId = g.id
+          group = `new supergroup "${g.name}" (id ${g.id})`
+        } else {
+          groupId = spec.discussion.chatId
+          group = spec.discussion.label
+        }
+        await this.d.tg.linkDiscussionGroup(chat.id, groupId)
+        lines.push(`Discussion group: ${group}, linked.`)
+      } catch (e) {
+        warnings.push(
+          `The discussion group was not linked${group ? ` (${group} exists)` : ''}: ${errText(e)}. The user can link one in the channel's settings.`,
+        )
+      }
+    }
+    lines.push(
+      `It is on none of the rule lists and has no nickname, so sending there follows defaultPolicy. To message it, save it with telegram_save_chat (chat ${chat.id}) and ask the user how it should be treated.`,
+      ...warnings.map(w => `Warning: ${w}`),
+    )
+    this.d.log?.(
+      `create chat: ${what} as ${chat.id}, approved ${VIA_TEXT[via]}, asked by ${item.sessionLabel}${warnings.length ? `; ${warnings.join(' ')}` : ''}`,
+    )
+    return { text: lines.join('\n') }
   }
 
   /**
@@ -1192,6 +1308,11 @@ export class Service {
         lines.push(`  taken over: chat ${t.chatId} until ${new Date(t.until).toISOString()}`)
       }
       lines.push(...this.#moderationLines())
+      lines.push(
+        store.get().chatCreation.enabled
+          ? 'Creating chats: on (telegram_create_chat; each new chat waits for the user in the menu bar or tray app)'
+          : 'Creating chats: off (chatCreation.enabled is false)',
+      )
       lines.push(watches.length ? 'Watches:' : 'Watches: none')
       for (const w of watches) {
         lines.push(
@@ -1365,8 +1486,7 @@ export class Service {
       const t = await this.#resolve(p.chat, true)
       const rec = this.#ownRecent(sid, t, p.messageId, 'delete')
       // Deleting changes what the chat sees, so, as with an edit, it needs the same yes as a send.
-      // A file follows the file rule: in a chat this session is watching (or took over), sending
-      // one needs approval, so deleting one does too.
+      // A file follows the file rule: sending one always needs approval, so deleting one does too.
       const decision = decideSend(config, t.peer, {
         isWatching: this.d.hub.isWatching(sid, t.peer.id),
         file: rec.kind === 'file',
@@ -1407,6 +1527,109 @@ export class Service {
       const topic = await this.d.tg.createTopic(t.peer.id, p.title)
       this.d.log?.(`create topic: "${p.title}" (${topic.id}) in ${t.label} (${t.peer.id}) by ${this.d.hub.label(sid)}`)
       return { text: `Created topic "${p.title}" in ${t.label}: topic id ${topic.id}. Allowed because ${decision.reason}.` }
+    },
+
+    telegram_create_chat: async (sid, p) => {
+      const config = this.d.store.get()
+      if (!config.chatCreation.enabled) {
+        return fail(
+          'Not created: creating chats is turned off. Only the user can turn it on, by setting chatCreation.enabled to true in the rules file (tgmcp config prints its path). Ask the user, or ask them to create the chat themselves.',
+        )
+      }
+      const title = p.title.trim()
+      if (!title) return fail('Not created: the title is empty.')
+      // What the user approves is the card's text: a line break or direction mark could fake a line there.
+      const unsafe =
+        createTextProblem('title', title, false) ??
+        createTextProblem('description', p.description ?? '', true) ??
+        (p.discussion?.kind === 'new' ? createTextProblem('discussion group title', p.discussion.title ?? '', false) : null)
+      if (unsafe) return fail(`Not created: ${unsafe}`)
+      if (p.discussion && p.type !== 'channel') return fail('Not created: only a channel can have a discussion group. Leave out discussion for a supergroup.')
+      const paused = this.#pauseRefusal(0, 'every chat', 'Not created')
+      if (paused) return paused
+      // A new chat is only ever made with the user's yes in the menu bar or tray: never on the
+      // model's word in chat, so a message in a watched chat can't talk a session into one.
+      if (!this.uiActive()) {
+        return fail(
+          'Not created: a new chat needs the user\'s approval in the menu bar or tray app, and it is not running. Ask the user to start it (tgmcp menubar), then try again.',
+        )
+      }
+      if (!this.uiCanCreate()) {
+        return fail('Not created: the menu bar or tray app running is too old to show a new-chat request. Ask the user to update it, then try again.')
+      }
+      const waitingHere = this.d.approvals.list().filter(a => a.action === 'create' && a.sessionId === sid).length
+      if (waitingHere >= MAX_WAITING_CREATES) {
+        return fail(`Not created: this session already has ${waitingHere} new chats waiting for the user. Wait for them to decide, or drop one with telegram_cancel_send.`)
+      }
+      const username = p.username?.replace(/^@/, '')
+      let discussion: CreateChatSpec['discussion']
+      if (p.discussion?.kind === 'new') {
+        discussion = { kind: 'new', title: p.discussion.title?.trim() || `${title} Chat`.slice(0, CHAT_TITLE_MAX) }
+      } else if (p.discussion?.kind === 'existing') {
+        const g = await this.#resolve(p.discussion.chat, true)
+        // The group's title comes from Telegram and goes on the card: the same check as a new title,
+        // before it goes into any message.
+        const groupUnsafe = createTextProblem('discussion group title', g.peer.name, false)
+        if (groupUnsafe) return fail(`Not created: ${groupUnsafe} Ask the user to rename the group in Telegram first.`)
+        if (g.peer.type !== 'group') return fail(`Not created: ${g.label} is not a group, so it can't be the channel's discussion group.`)
+        if (g.peer.basicGroup) {
+          return fail(`Not created: ${g.label} is a basic group, and only a supergroup can be a channel's discussion group. Ask the user to upgrade it in Telegram first.`)
+        }
+        const rule = decideSend(config, g.peer, { isWatching: false })
+        if (rule.action === 'block') return fail(`Not created: ${g.label} is blocked (${rule.reason}), so it won't be linked.`)
+        const groupPaused = this.#pauseRefusal(g.peer.id, g.label, 'Not created')
+        if (groupPaused) return groupPaused
+        discussion = { kind: 'existing', chatId: g.peer.id, label: `${g.label} (${fmtPeer(g.peer)})` }
+      }
+      const spec: CreateChatSpec = {
+        type: p.type,
+        title,
+        ...(p.description?.trim() ? { description: p.description.trim() } : {}),
+        ...(username ? { username } : {}),
+        ...(discussion ? { discussion } : {}),
+      }
+      const label = `new ${spec.type} "${title}"`
+      const detail = `${spec.type} · ${username ? `public @${username}` : 'private'}`
+      const text = describeCreate(spec)
+      const reason = 'creating a chat always needs the user\'s yes in the menu bar or tray app'
+      const pending = this.d.approvals.create({
+        action: 'create',
+        create: spec,
+        peer: { id: 0, type: spec.type === 'channel' ? 'channel' : 'group', name: title, username: username ?? null },
+        firstTime: false,
+        askedInUi: true,
+        nickname: null,
+        suggestedNickname: '',
+        sessionId: sid,
+        sessionLabel: this.d.hub.label(sid),
+        chatId: 0,
+        chatLabel: label,
+        chatDetail: detail,
+        username: null,
+        text,
+        parseMode: 'plain',
+        reason,
+      })
+      this.d.log?.(`create chat asked: ${createLogLine(spec)} by ${pending.sessionLabel}, waiting for approval (${pending.id})`)
+      return {
+        text: [
+          `Not created yet: needs the user's approval in the menu bar or tray app. Approval id: ${pending.id}`,
+          text,
+          '',
+          'It is waiting in the menu bar for the user to approve or deny. Only the user can approve it there: do not call telegram_confirm_send for it. Call telegram_cancel_send if they want to drop it.',
+        ].join('\n'),
+        approval: {
+          id: pending.id,
+          action: 'create',
+          to: label,
+          text,
+          reason,
+          uiActive: true,
+          firstTime: false,
+          nickname: null,
+          suggestedNickname: '',
+        },
+      }
     },
 
     telegram_page: async (sid, p) => {
@@ -1609,6 +1832,40 @@ export class Service {
 /** "message #12 in Team QA [qa] (-100…) by api · pid 4121", for daemon.log. */
 function changeLogLine(item: PendingSend): string {
   return `message #${item.messageId} in ${item.chatLabel} (${item.chatId}) by ${item.sessionLabel}`
+}
+
+/**
+ * What the user approves for telegram_create_chat: every detail of the new chat, one per line. The
+ * description comes last and indented, so a line inside it can't pass for one of the lines above.
+ */
+export function describeCreate(spec: CreateChatSpec): string {
+  const lines = [`Create a new ${spec.username ? 'public' : 'private'} ${spec.type}: "${spec.title}"`]
+  lines.push(spec.username ? `Public link: https://t.me/${spec.username} (@${spec.username})` : 'No username: people join by invite link.')
+  if (spec.discussion?.kind === 'new') lines.push(`Discussion group: a new supergroup "${spec.discussion.title}", linked to it`)
+  if (spec.discussion?.kind === 'existing') lines.push(`Discussion group: ${spec.discussion.label}, linked to it`)
+  if (spec.description) lines.push('Description:', ...spec.description.split('\n').map(l => `  ${l}`))
+  return lines.join('\n')
+}
+
+/** Why a title or description can't go on a create card as it is, or null. Only a description may span lines. */
+function createTextProblem(what: string, text: string, multiline: boolean): string | null {
+  if (CONTROL.test(text) || (!multiline && /[\n\u2028\u2029]/.test(text))) {
+    return `the ${what} can't contain ${multiline ? '' : 'line breaks or '}control characters.`
+  }
+  if (/[\u2028\u2029]/.test(text)) return `the ${what} can't contain Unicode line or paragraph separators.`
+  if (BIDI.test(text)) return `the ${what} can't contain text direction marks.`
+  return null
+}
+
+/** For daemon.log: what a create makes, without the description (it can be long). */
+function createLogLine(spec: CreateChatSpec): string {
+  const discussion =
+    spec.discussion?.kind === 'new'
+      ? `, new discussion group "${spec.discussion.title}"`
+      : spec.discussion?.kind === 'existing'
+        ? `, discussion group ${spec.discussion.chatId}`
+        : ''
+  return `${spec.type} "${spec.title}"${spec.username ? ` @${spec.username}` : ' (private)'}${discussion}`
 }
 
 function uiPage(p: Page): UiPage {

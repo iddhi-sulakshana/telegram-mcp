@@ -56,37 +56,45 @@ export interface OutgoingFile {
 
 const MAX_UPLOAD = 2000 * 1024 * 1024
 
-/** Folders under the home directory that hold credentials. */
-const SECRET_DIRS = ['.ssh', '.gnupg', '.aws', '.azure', '.kube', '.docker', '.config/gcloud', '.config/gh', 'Library/Keychains']
+/** Folders under the home directory that hold credentials, or an agent's settings and history. */
+const SECRET_DIRS = ['.ssh', '.gnupg', '.aws', '.azure', '.kube', '.docker', '.config/gcloud', '.config/gh', 'Library/Keychains', '.claude']
 /** Base names that are credentials wherever they sit. */
-const SECRET_NAMES = /^(\.env(\..*)?|\.netrc|\.npmrc|\.pypirc|id_(rsa|dsa|ecdsa|ed25519)(_[\w-]+)?(\.pub)?|.*\.(pem|key|p12|pfx|kdbx))$/i
+const SECRET_NAMES =
+  /^(.*\.env(\..*)?|\.envrc|\.netrc|\.npmrc|\.pypirc|\.git-credentials|\.claude\.json(\..*)?|id_(rsa|dsa|ecdsa|ed25519)(_[\w-]+)?(\.pub)?|.*\.(pem|key|p12|pfx|kdbx))$/i
 
 /**
  * Whether a local file may be sent at all, whatever the chat rules say: an absolute path to a
  * regular, non-empty file under Telegram's size limit, and not a credential. `mcpHome` is this
  * tool's own folder (login session, API token), which is never sent.
  */
-export function checkSendable(path: string, o: { mcpHome: string; home?: string }): OutgoingFile {
+export function checkSendable(path: string, o: { mcpHome: string; home?: string; ignoreCase?: boolean }): OutgoingFile {
   if (!isAbsolute(path)) throw new Error(`Give an absolute path, not "${path}".`)
   let real: string
   try {
-    real = realpathSync(path)
+    real = realpathSync.native(path)
   } catch {
     throw new Error(`No such file: ${path}`)
   }
   const st = statSync(real)
+  // A network share or a device path (two leading slashes) can reach the same files by another name.
+  if (/^[\\/]{2}/.test(real)) throw new Error(`Refusing to send ${path}: give a path on a local drive, not a network or device path.`)
   if (!st.isFile()) throw new Error(`Not a regular file: ${path}`)
   if (st.size === 0) throw new Error(`The file is empty: ${path}`)
   if (st.size > MAX_UPLOAD) throw new Error(`The file is ${fmtBytes(st.size)}; Telegram takes at most ${fmtBytes(MAX_UPLOAD)}.`)
   const home = o.home ?? homedir()
   const realOr = (p: string) => {
     try {
-      return realpathSync(p)
+      return realpathSync.native(p)
     } catch {
       return p
     }
   }
-  const inside = (dir: string) => real === dir || real.startsWith(dir.endsWith(sep) ? dir : dir + sep)
+  // Windows and macOS file systems ignore case by default: ~/.SSH is ~/.ssh there.
+  const fold = (o.ignoreCase ?? (process.platform === 'win32' || process.platform === 'darwin')) ? (p: string) => p.toLowerCase() : (p: string) => p
+  const inside = (dir: string) => {
+    const [r, d] = [fold(real), fold(dir)]
+    return r === d || r.startsWith(d.endsWith(sep) ? d : d + sep)
+  }
   const guarded = [realOr(o.mcpHome), ...SECRET_DIRS.map(d => realOr(join(home, d)))]
   if (guarded.some(inside) || SECRET_NAMES.test(basename(real))) {
     throw new Error(`Refusing to send ${path}: it looks like a credential or this tool's own login files.`)
