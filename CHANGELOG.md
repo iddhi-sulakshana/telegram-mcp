@@ -5,6 +5,7 @@ Each release's section here becomes its "What's new" on GitHub. Add the next one
 
 ## Unreleased
 
+- **Create channels and supergroups (`telegram_create_chat`)**: a session can ask to create a broadcast channel or a supergroup on your account, optionally public with a username and, for a channel, with a discussion group (a new supergroup, or one you already administer). It is off by default (`chatCreation.enabled` in `config.json`), and every create waits for you in the menu bar or tray app, with a **Create** / **Deny** card and notification that show the type, name, description, public link and discussion group. It can't be approved in the Claude Code dialog or in chat, and it is refused while neither app is running. A taken username leaves the chat private and says so; a failed link keeps the channel and says what happened. The new chat goes on no list and gets no nickname. `telegram_status` shows whether it is on, and `daemon.log` records each ask and its outcome.
 - **Choose who never gets an away reply**: `away.skip` in `config.json` lists chats (nickname, @username or id) that never get an away reply, such as a manager, whatever their other rules. Sending, watching and auto-reply there are unchanged. On the tray's Away tab, **Who gets away replies** lists every saved person with a switch. Renaming a contact keeps them on the list, and a name only `away.skip` mentions can't be given to another chat, the same guard the rule lists have. The macOS menu bar's Away page doesn't show the list yet but keeps it when it saves.
 
 ## 1.2.0

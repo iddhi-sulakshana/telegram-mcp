@@ -3,10 +3,22 @@ import type { ApprovalAction, PeerInfo, ToolResult } from '../shared/protocol'
 import type { StickerRef } from './telegram'
 import { newId } from './sessions'
 
+/** A new channel or supergroup, as telegram_create_chat asked for it (username without the @). */
+export interface CreateChatSpec {
+  type: 'channel' | 'supergroup'
+  title: string
+  description?: string
+  username?: string
+  /** A channel's discussion group: a new supergroup with this title, or an existing one. */
+  discussion?: { kind: 'new'; title: string } | { kind: 'existing'; chatId: number; label: string }
+}
+
 export interface PendingSend {
   id: string
-  /** Absent means a send. An edit or delete is of a message this session sent (messageId). */
+  /** Absent means a send. An edit or delete is of a message this session sent (messageId). A create makes a new chat (`create`). */
   action?: ApprovalAction
+  /** What a create makes. chatId is 0 then: the chat doesn't exist yet. */
+  create?: CreateChatSpec
   messageId?: number
   /** An edit: the text the chat sees now. `text` is the new text; for a delete, the message to remove. */
   previousText?: string
@@ -52,6 +64,8 @@ export type Remember = 'autoSend' | 'requireApproval'
 export interface DecideOptions {
   remember?: Remember
   nickname?: string
+  /** The menu bar or tray app deciding said it shows new-chat cards as such (UI_FEATURES_HEADER). */
+  uiCreate?: boolean
 }
 
 export interface Outcome {
@@ -138,6 +152,8 @@ function expiredText(item: PendingSend, minutes: number): string {
       return `Nobody approved the edit of message #${item.messageId} in ${item.chatLabel} within ${minutes} minutes. It was not edited.`
     case 'delete':
       return `Nobody approved deleting message #${item.messageId} in ${item.chatLabel} within ${minutes} minutes. It was not deleted.`
+    case 'create':
+      return `Nobody approved the ${item.chatLabel} within ${minutes} minutes. Nothing was created.`
     case 'send':
       return `Nobody approved the message to ${item.chatLabel} within ${minutes} minutes. Nothing was sent.`
   }

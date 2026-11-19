@@ -9,6 +9,7 @@ import { DEFAULT_MODERATORS } from './moderation'
  * The rules file. Humans edit it by hand; Claude sessions can only change `chats`
  * (through the daemon), never `rules`, `footer` or `guides`. `away` (the away auto-reply schedules)
  * and `moderation` (moderator commands) are changed only by hand, by the CLI or by the tray, never by a session.
+ * The same goes for `chatCreation` (whether sessions may ask to create channels and supergroups).
  */
 
 const ChatRefSchema = z.union([z.string().min(1), z.number().int()])
@@ -78,6 +79,17 @@ const ModerationSchema = z.looseObject({
 })
 export type ModerationConfig = z.infer<typeof ModerationSchema>
 
+/**
+ * telegram_create_chat: a session may ask to create a channel or supergroup on this account. Off by
+ * default. Even when on, every create waits for the user's yes in the menu bar or tray app, and a new
+ * chat is put on no list and saved under no nickname.
+ */
+const ChatCreationSchema = z.looseObject({
+  /** Off unless the owner turns it on by hand: a session can't create chats by default. */
+  enabled: z.boolean().default(false),
+})
+export type ChatCreationConfig = z.infer<typeof ChatCreationSchema>
+
 export const ConfigSchema = z.looseObject({
   guides: z.array(z.string()).default([]),
   footer: z.string().default(''),
@@ -90,6 +102,7 @@ export const ConfigSchema = z.looseObject({
   paging: PagingSchema.prefault({}),
   away: AwaySchema.prefault({}),
   moderation: ModerationSchema.prefault({}),
+  chatCreation: ChatCreationSchema.prefault({}),
 })
 export type Config = z.infer<typeof ConfigSchema>
 export type RuleList = 'blocked' | 'requireApproval' | 'autoSend' | 'autoReply'
@@ -107,6 +120,7 @@ export const DEFAULT_CONFIG_TEXT = `${JSON.stringify(
     chats: {},
     away: { enabled: false, quietMinutes: 30, schedules: DEFAULT_SCHEDULES },
     moderation: { enabled: false, moderators: DEFAULT_MODERATORS, defaultMinutes: 60, maxMinutes: 1440 },
+    chatCreation: { enabled: false },
   },
   null,
   2,

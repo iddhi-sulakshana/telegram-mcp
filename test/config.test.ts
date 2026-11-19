@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ConfigStore, isListed, parseConfig, rawId, resolveRef, validateNickname } from '../src/shared/config'
+import { USERNAME_RE } from '../src/shared/tools'
 
 const config = parseConfig(
   JSON.stringify({
@@ -116,5 +117,24 @@ describe('ConfigStore', () => {
     store.reload()
     expect(store.error()).toContain('config.json is invalid')
     expect(store.get().away.schedules.map(s => s.from)).toEqual(['18:00'])
+  })
+})
+
+describe('chatCreation', () => {
+  test('off unless turned on, in a new config and in the example', () => {
+    expect(parseConfig('{}').chatCreation).toEqual({ enabled: false })
+    expect(parseConfig(JSON.stringify({ chatCreation: { enabled: true } })).chatCreation.enabled).toBe(true)
+    const example = parseConfig(readFileSync(join(import.meta.dir, '../config.example.json'), 'utf8'))
+    expect(example.chatCreation.enabled).toBe(false)
+  })
+})
+
+describe('USERNAME_RE', () => {
+  test('Telegram\'s username rules', () => {
+    for (const ok of ['acme_support', '@acme_support', 'Abcde', 'a1234', 'a_b_c_d']) expect(USERNAME_RE.test(ok)).toBe(true)
+    for (const bad of ['abcd', '1abcde', '_abcde', 'abcde_', 'ab__cd', 'ab-cde', 'a'.repeat(33), '@@abcde', 'ab cde']) {
+      expect(USERNAME_RE.test(bad)).toBe(false)
+    }
+    expect(USERNAME_RE.test('a'.repeat(32))).toBe(true)
   })
 })
