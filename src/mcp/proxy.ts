@@ -9,7 +9,7 @@ import { parseConfig } from '../shared/config'
 import { openSecretStore, readToken } from '../shared/secrets'
 import { LAUNCHD_LABEL, getPaths, getPort } from '../shared/paths'
 import type { ApprovalRequest, TgEvent, ToolResult } from '../shared/protocol'
-import { toolList } from '../shared/tools'
+import { isToolName, toolList } from '../shared/tools'
 import { DaemonClient } from './daemon-client'
 
 const VERSION = '0.1.0'
@@ -167,6 +167,11 @@ export async function runProxy(opts: { channel: boolean }): Promise<void> {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: toolList() }))
 
   server.setRequestHandler(CallToolRequestSchema, async req => {
+    // Only the listed tools reach the daemon: its internal calls (the dialog's answer, the wait
+    // for the menu bar) are the proxy's own and must never come from the model.
+    if (!isToolName(req.params.name)) {
+      return { content: [{ type: 'text' as const, text: `Unknown tool: ${req.params.name}` }], isError: true }
+    }
     try {
       const { result: first, pending } = await daemon.call(req.params.name, req.params.arguments ?? {})
       const result = first.approval ? await approve(first.approval, first) : first
