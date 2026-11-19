@@ -88,7 +88,8 @@ export function startServer(o: ServerOptions) {
       if (url.pathname === '/health') return Response.json({ ok: true, service: 'telegram-mcp' })
 
       const bearer = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? null
-      const authed = sameToken(bearer ?? url.searchParams.get('token'), o.token)
+      // Only the header: a token in a URL ends up in logs, history and transcripts.
+      const authed = sameToken(bearer, o.token)
 
       if (url.pathname === '/events') {
         const sid = url.searchParams.get('session')

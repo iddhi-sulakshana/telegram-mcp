@@ -62,7 +62,7 @@ Nothing secret is kept in a plain file. Three secrets go to the operating system
 | Secret | What it is |
 | --- | --- |
 | `session-key` | Encrypts the Telegram auth key inside `session.db` (AES-256-GCM) |
-| `token` | Shared secret for the local API, so web pages and other users can't talk to the daemon |
+| `token` | Shared secret for the local API, so web pages and other users can't talk to the daemon. Clients send it in the `Authorization: Bearer` header, also on WebSocket upgrades; a token in the URL is refused |
 | `credentials` | api_id / api_hash |
 
 **Why the session key matters.** A Telegram auth key *is* your login: whoever copies it is you, with no code and no 2FA asked. `session.db` still holds the peer cache and update state, but its auth key rows are sealed with `session-key`. A copy of the folder alone (a backup, a synced dotfiles repo, a stolen disk image, or an infostealer that grabs `~/.config`) doesn't give anyone your account.

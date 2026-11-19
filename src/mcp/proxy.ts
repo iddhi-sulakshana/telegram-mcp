@@ -84,9 +84,9 @@ export async function runProxy(opts: { channel: boolean }): Promise<void> {
 
   const secrets = openSecretStore(paths)
   const daemon = new DaemonClient({
-    url: async () => {
+    target: async () => {
       const token = await readToken(secrets)
-      return token ? `ws://127.0.0.1:${port}/bridge?token=${token}` : null
+      return token ? { url: `ws://127.0.0.1:${port}/bridge`, token } : null
     },
     sessionId,
     label: `${basename(process.cwd())} · pid ${process.ppid}`,

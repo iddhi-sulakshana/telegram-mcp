@@ -430,9 +430,9 @@ switch (cmd) {
     const { newId } = await import('./daemon/sessions')
     const secrets = openSecretStore(getPaths())
     const client = new DaemonClient({
-      url: async () => {
+      target: async () => {
         const token = await readToken(secrets)
-        return token ? `ws://127.0.0.1:${getPort()}/bridge?token=${token}` : null
+        return token ? { url: `ws://127.0.0.1:${getPort()}/bridge`, token } : null
       },
       sessionId: newId('s_'),
       label: 'tgmcp call',
