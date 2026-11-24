@@ -388,7 +388,9 @@ export function formatEvent(e: TgEvent): string {
     return `Moderator pause lifted for ${scope}. Watched messages come to you again; carry on only as the user asked when they started the watch.`
   }
   if (e.takeover?.action === 'stop') return `Takeover ended: the user typed /reply stop in ${where} · chat_id ${e.chatId}. Stop replying there.`
-  const who = e.fromUsername ? `${fieldName(e.fromName)} (@${e.fromUsername})` : fieldName(e.fromName)
+  // The sender's id, as in telegram_read_messages, so a display name can't pass for someone else's.
+  const tags = [e.fromUsername ? `@${e.fromUsername}` : null, e.fromId !== null ? `id ${e.fromId}` : null].filter(Boolean)
+  const who = tags.length ? `${fieldName(e.fromName)} (${tags.join(', ')})` : fieldName(e.fromName)
   const head = [
     `Telegram message from ${who} in ${where}`,
     `chat_id ${e.chatId}`,
