@@ -213,12 +213,14 @@ export class FakeTelegram implements TelegramPort {
 
   /** Unread counts by chat id, for list_chats tests. */
   unread = new Map<number, number>()
+  /** The last message each chat shows in the dialog list. */
+  lastMessages = new Map<number, DialogInfo['lastMessage']>()
 
   async listDialogs(opts: { limit: number; unreadOnly?: boolean; type?: ChatKind }): Promise<DialogInfo[]> {
     for (const id of this.uncached) this.uncached.delete(id)
     return [...this.peers.values()]
       .filter(peer => matchesChatKind(peer.type, opts.type ?? 'all'))
-      .map(peer => ({ peer, unread: this.unread.get(peer.id) ?? 0, pinned: false, lastMessage: null }))
+      .map(peer => ({ peer, unread: this.unread.get(peer.id) ?? 0, pinned: false, lastMessage: this.lastMessages.get(peer.id) ?? null }))
       .filter(d => !opts.unreadOnly || d.unread > 0)
       .slice(0, opts.limit)
   }

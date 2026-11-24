@@ -27,7 +27,7 @@ import { looksLikeReplyCommand, parseReplyCommand } from '../shared/takeover'
 import { fmtMinutes, looksLikeBotsCommand, moderatorCommand, parseBotsCommand, stopMinutes } from '../shared/moderation'
 import type { IncomingMessage, MessageInfo, PeerInfo, SendMode, SentRecord, TgEvent, ToolResult, UiContact, UiModeration, UiPage, UiState } from '../shared/protocol'
 import { CHAT_KINDS, CHAT_TITLE_MAX, TOOLS, chatKindOf, isToolName, type ToolInput, type ToolName } from '../shared/tools'
-import { messageBody, oneLine, quoted } from '../shared/text'
+import { fieldName, inlineQuote, messageBody, oneLine, quoted } from '../shared/text'
 import { uiAway, type AwayResponder } from './away'
 import type { Approvals, CreateChatSpec, DecideOptions, PendingSend } from './approvals'
 import type { Pause, Pauses } from './moderation'
@@ -138,18 +138,19 @@ const fail = (text: string): ToolResult => ({ text, isError: true })
 const KIND_HEADINGS = { private: 'Private chats', groups: 'Groups', channels: 'Channels', bots: 'Bots' } as const
 
 export function fmtPeer(p: PeerInfo): string {
-  return [oneLine(p.name), p.username ? `@${p.username}` : null, `id ${p.id}`, p.type, p.isForum ? 'forum' : null]
+  return [fieldName(p.name), p.username ? `@${p.username}` : null, `id ${p.id}`, p.type, p.isForum ? 'forum' : null]
     .filter(Boolean)
     .join(' · ')
 }
 
 function clip(s: string, n: number): string {
-  const flat = s.replace(/\s+/g, ' ').trim()
+  const flat = s.replace(/[\s\u0085\u2028\u2029]+/g, ' ').trim()
   return flat.length > n ? `${flat.slice(0, n - 1)}…` : flat
 }
 
 export function fmtMessage(m: MessageInfo): string {
-  const who = m.outgoing ? 'me' : m.from ? oneLine(m.from.username ? `${m.from.name} (@${m.from.username})` : m.from.name) : 'unknown'
+  // Anyone else carries their id, so a display name like "me" can't pass for the user's own messages.
+  const who = m.outgoing ? 'me' : m.from ? `${oneLine(m.from.name)} (${m.from.username ? `@${m.from.username}, ` : ''}id ${m.from.id})` : 'unknown'
   const marks = [m.replyToId ? `reply to #${m.replyToId}` : null, m.topicId ? `topic ${m.topicId}` : null].filter(Boolean)
   // Every line of the text is quoted, so none of it can pass for the next message's line.
   return `#${m.id} ${m.date.slice(0, 16).replace('T', ' ')} ${who}${marks.length ? ` (${marks.join(', ')})` : ''}: ${quoted(messageBody(m.text, m.media, '[empty]'))}`
@@ -1350,13 +1351,13 @@ export class Service {
       const c = this.d.store.get()
       const name = (ref: ChatRef) => {
         const r = resolveRef(c, ref)
-        if (r.kind === 'entry') return `${r.nickname} (id ${r.entry.id}${r.entry.username ? `, @${r.entry.username}` : ''})`
-        if (r.kind === 'unknown') return `${ref} (not a saved nickname: matches nothing)`
+        if (r.kind === 'entry') return `${fieldName(r.nickname)} (id ${r.entry.id}${r.entry.username ? `, @${r.entry.username}` : ''})`
+        if (r.kind === 'unknown') return `${fieldName(String(ref))} (not a saved nickname: matches nothing)`
         if (r.kind === 'id') {
           const same = Object.entries(c.chats).find(([, e]) => rawId(e.id) === rawId(r.id))
-          if (same) return `${ref} (= ${same[1].name ?? same[0]} [${same[0]}])`
+          if (same) return `${ref} (= ${fieldName(same[1].name ?? same[0])} [${fieldName(same[0])}])`
         }
-        return String(ref)
+        return fieldName(String(ref))
       }
       const out = ['Guides:', ...(c.guides.length ? c.guides.map(g => `- ${g}`) : ['- (none)'])]
       out.push('', `Footer added to every message: ${footerSummary(c)}`)
@@ -1373,14 +1374,14 @@ export class Service {
         const bits = [
           `id ${e.id}`,
           e.username ? `@${e.username}` : null,
-          e.name,
+          e.name ? fieldName(e.name) : null,
           e.type,
           e.topicId ? `topic ${e.topicId}` : null,
-          e.aliases.length ? `aliases: ${e.aliases.join(', ')}` : null,
+          e.aliases.length ? `aliases: ${e.aliases.map(fieldName).join(', ')}` : null,
           policyLabel(c, { id: e.id, username: e.username }),
-          e.notes ? `notes: ${e.notes}` : null,
+          e.notes ? `notes: ${fieldName(e.notes)}` : null,
         ].filter(Boolean)
-        out.push(`  ${nick}: ${bits.join(' · ')}`)
+        out.push(`  ${fieldName(nick)}: ${bits.join(' · ')}`)
       }
       if (this.d.store.error()) out.push('', this.d.store.error()!)
       return { text: out.join('\n') }
@@ -1398,8 +1399,8 @@ export class Service {
       else if (p.sort === 'name') dialogs.sort((a, b) => a.peer.name.localeCompare(b.peer.name, undefined, { sensitivity: 'base' }))
       const line = (d: (typeof dialogs)[number]) => {
         const nick = nicknameFor(c, d.peer.id)
-        const last = d.lastMessage ? ` · last: ${d.lastMessage.outgoing ? 'me: ' : ''}"${clip(d.lastMessage.text || '[media]', 60)}"` : ''
-        return `• ${fmtPeer(d.peer)}${nick ? ` · [${nick}]` : ''}${d.unread ? ` · ${d.unread} unread` : ''} · ${policyLabel(c, d.peer)}${last}`
+        const last = d.lastMessage ? ` · last: ${d.lastMessage.outgoing ? 'me: ' : ''}"${clip(inlineQuote(d.lastMessage.text || '[media]'), 60)}"` : ''
+        return `• ${fmtPeer(d.peer)}${nick ? ` · [${fieldName(nick)}]` : ''}${d.unread ? ` · ${d.unread} unread` : ''} · ${policyLabel(c, d.peer)}${last}`
       }
       if (!p.categorize) return { text: dialogs.map(line).join('\n') }
       const out: string[] = []
@@ -1422,7 +1423,7 @@ export class Service {
         text: found
           .map(f => {
             const nick = nicknameFor(c, f.id)
-            return `• ${fmtPeer(f)}${nick ? ` · saved as "${nick}"` : ''}${f.global ? ' · public result, not in your chats' : ''}`
+            return `• ${fmtPeer(f)}${nick ? ` · saved as "${inlineQuote(nick)}"` : ''}${f.global ? ' · public result, not in your chats' : ''}`
           })
           .join('\n'),
       }
@@ -1526,7 +1527,7 @@ export class Service {
       const t = await this.#resolve(p.chat, false)
       const topics = await this.d.tg.listTopics(t.peer.id)
       const head = `${t.label} · ${fmtPeer(t.peer)} · ${topics.length} topics`
-      return { text: [head, ...(t.warning ? [`Warning: ${t.warning}`] : []), ...topics.map(x => `topic ${x.id} · ${oneLine(x.title)}`)].join('\n') }
+      return { text: [head, ...(t.warning ? [`Warning: ${t.warning}`] : []), ...topics.map(x => `topic ${x.id} · ${fieldName(x.title)}`)].join('\n') }
     },
 
     telegram_create_topic: async (sid, p) => {
@@ -1750,7 +1751,7 @@ export class Service {
 
       const existing = config.chats[nick]
       if (existing && existing.id !== peer.id && !p.overwrite) {
-        return fail(`"${nick}" already points to ${existing.name ?? 'a chat'} (id ${existing.id}). Pass overwrite: true to repoint it at ${oneLine(peer.name)}.`)
+        return fail(`"${nick}" already points to ${existing.name ? fieldName(existing.name) : 'a chat'} (id ${existing.id}). Pass overwrite: true to repoint it at ${oneLine(peer.name)}.`)
       }
       // Rules refer to chats by nickname. Letting a session repoint or create a name the rules
       // already use would let it move "autoSend" (or out of "blocked") to a different chat.

@@ -3,6 +3,7 @@ import { basename, dirname } from 'node:path'
 import { z } from 'zod'
 import { AwaySchema, DEFAULT_SCHEDULES } from './away'
 import { BIDI, CONTROL, DEFAULT_FOOTER } from './footer'
+import { fieldName } from './text'
 import { DEFAULT_MODERATORS } from './moderation'
 
 /**
@@ -168,8 +169,8 @@ export type Resolved =
   | { kind: 'unknown'; query: string; suggestions: string[] }
 
 function describeEntry(nickname: string, e: ChatEntry): string {
-  const bits = [e.name, e.username ? `@${e.username}` : null].filter(Boolean)
-  return bits.length ? `${nickname} (${bits.join(', ')})` : nickname
+  const bits = [e.name ? fieldName(e.name) : null, e.username ? `@${e.username}` : null].filter(Boolean)
+  return bits.length ? `${fieldName(nickname)} (${bits.join(', ')})` : fieldName(nickname)
 }
 
 /**
