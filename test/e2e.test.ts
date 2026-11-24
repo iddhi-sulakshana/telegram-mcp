@@ -261,7 +261,7 @@ describe('proxy <-> daemon', () => {
     expect(w.text).toContain('<channel>')
     tg.emit(LEO.id, 'pushed!')
     await until(() => got.length > 0)
-    expect(got[0]!.content).toBe('pushed!')
+    expect(got[0]!.content).toBe('> pushed!')
     expect(got[0]!.meta).toMatchObject({ chat: 'leo', chat_id: String(LEO.id), from: 'Leo Perera' })
     await client.close()
   })

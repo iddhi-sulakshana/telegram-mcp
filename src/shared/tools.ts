@@ -111,7 +111,7 @@ export const TOOLS = {
   },
   telegram_delete_message: {
     description:
-      'Delete a message this session sent recently, for everyone in the chat (its telegram_send_message, send_file or send_sticker, a /reply answer, or a draft of its the user approved; the message id is in the send result). Deleting changes what the chat sees, so it follows the sending rules: where sending is automatic (auto-send, a watched autoReply chat, or a /reply takeover) it is deleted at once; where sending needs approval, the delete waits for the user to approve it the same way; blocked chats are refused. It cannot delete another session\'s messages, messages the user typed (including the Page button\'s), the pager\'s or away replies, or other people\'s messages. It cannot be undone, so use it only to take back something that should not be there, e.g. a wrong or private detail; for a small fix use telegram_edit_message. Each delete is logged.',
+      'Delete a message this session sent recently, for everyone in the chat (its telegram_send_message, send_file or send_sticker, a /reply answer, or a draft of its the user approved; the message id is in the send result). Deleting changes what the chat sees, so it follows the sending rules: where sending is automatic (auto-send, a watched autoReply chat, or a /reply takeover) a text message or sticker is deleted at once; where sending needs approval, and for a file anywhere, the delete waits for the user to approve it the same way; blocked chats are refused. It cannot delete another session\'s messages, messages the user typed (including the Page button\'s), the pager\'s or away replies, or other people\'s messages. It cannot be undone, so use it only to take back something that should not be there, e.g. a wrong or private detail; for a small fix use telegram_edit_message. Each delete is logged.',
     input: z.object({
       chat: chatRef,
       messageId: z.number().int().describe('Id of the message to delete.'),
@@ -119,7 +119,7 @@ export const TOOLS = {
   },
   telegram_send_file: {
     description:
-      'Send a local file (any type) with an optional caption. Same rules as telegram_send_message: auto-send chats get it now, others ask the user first, blocked chats are refused; the footer goes on the caption. A file to a chat this session is watching always asks the user first, even on auto-send. Credentials (SSH keys, .env files, cloud logins, this tool\'s own session) are always refused.',
+      'Send a local file (any type) with an optional caption. A file always asks the user first, in every chat, even on auto-send, and only the user can approve it, in the menu bar or tray app or the approval dialog (telegram_confirm_send cannot); blocked chats are refused; the footer goes on the caption. Credentials (SSH keys, .env files, git credentials, cloud logins, Claude Code\'s settings, this tool\'s own session) are always refused.',
     input: z.object({
       to: chatRef,
       path: z.string().min(1).describe('Absolute path of the file to send.'),

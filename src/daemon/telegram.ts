@@ -14,6 +14,7 @@ import type {
 import { downloadFileName, fmtBytes, type OutgoingFile } from '../shared/media'
 import type { Credentials } from '../shared/secrets'
 import { matchesChatKind, type ChatKind } from '../shared/tools'
+import { oneLine } from '../shared/text'
 import { SessionLockedError } from './session-store'
 
 export interface SendOptions {
@@ -138,7 +139,8 @@ function fileMeta(media: FileLocation & { type: string }): { name: string | null
 function mediaLabel(media: Message['media']): string | null {
   if (!media) return null
   if (!(media instanceof FileLocation)) return media.type
-  const detail = [fileMeta(media).name, media.fileSize ? fmtBytes(media.fileSize) : null].filter(Boolean).join(', ')
+  const name = fileMeta(media).name
+  const detail = [name ? oneLine(name) : null, media.fileSize ? fmtBytes(media.fileSize) : null].filter(Boolean).join(', ')
   return detail ? `${media.type}: ${detail}` : media.type
 }
 
