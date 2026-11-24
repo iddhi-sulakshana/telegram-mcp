@@ -457,6 +457,13 @@ export class Service {
     if (waiting?.action === 'create' && approve && !opts.uiCreate) {
       return fail(`Not created: this menu bar or tray app is too old to approve new chats. Update it, then approve the ${waiting.chatLabel} there.`)
     }
+    // A file goes out only on a yes the user gave in the menu bar, the tray or the dialog, never on
+    // the model's word in chat: a watched chat could ask for one. Refused without taking the draft.
+    if (waiting?.file && waiting.action !== 'edit' && waiting.action !== 'delete' && approve && via === 'chat') {
+      return fail(
+        `Not sent: a file (${id}) can only be approved by the user in the menu bar or tray app, or in Claude Code's approval dialog, never in chat. Call telegram_cancel_send if they want to drop it.`,
+      )
+    }
     const item = this.d.approvals.take(id, sessionId)
     let result: ToolResult
     if (item.action === 'edit' || item.action === 'delete') {
@@ -836,7 +843,9 @@ export class Service {
           : null,
         uiActive
           ? 'It is waiting in the menu bar for the user to approve or deny. Only the user can approve it there: do not call telegram_confirm_send for it.'
-          : `Show the user this exact message and recipient. Only if they say yes, call telegram_confirm_send with the approval id; otherwise telegram_cancel_send.${firstTime ? ' Approving here saves the chat as "ask every time"; only the user can change that to "always allow", in the menu bar / tray app\'s Contacts page or config.json.' : ''}`,
+          : file
+            ? `A file is only sent with the user's yes in the menu bar or tray app, or in Claude Code's approval dialog; telegram_confirm_send can't approve it. Ask the user to open the menu bar or tray app (tgmcp menubar) and send it again, or call telegram_cancel_send.`
+            : `Show the user this exact message and recipient. Only if they say yes, call telegram_confirm_send with the approval id; otherwise telegram_cancel_send.${firstTime ? ' Approving here saves the chat as "ask every time"; only the user can change that to "always allow", in the menu bar / tray app\'s Contacts page or config.json.' : ''}`,
       ]
         .filter(line => line !== null)
         .join('\n'),
@@ -1478,8 +1487,7 @@ export class Service {
       const t = await this.#resolve(p.chat, true)
       const rec = this.#ownRecent(sid, t, p.messageId, 'delete')
       // Deleting changes what the chat sees, so, as with an edit, it needs the same yes as a send.
-      // A file follows the file rule: in a chat this session is watching (or took over), sending
-      // one needs approval, so deleting one does too.
+      // A file follows the file rule: sending one always needs approval, so deleting one does too.
       const decision = decideSend(config, t.peer, {
         isWatching: this.d.hub.isWatching(sid, t.peer.id),
         file: rec.kind === 'file',

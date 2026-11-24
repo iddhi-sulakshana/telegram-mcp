@@ -76,7 +76,7 @@ You can only watch chats on the user's autoReply list. `telegram_get_rules` show
 
 While you watch, handle each message the way the user asked when they started the watch: tell them, reply, or summarise. Your replies to a watched chat go out without approval. To reply in the thread, pass `to` = the chat id and `replyTo` = the message id from the notification.
 
-Files to a watched chat always ask the user first, even when the chat would normally send at once. The person asking for the file may be someone in the chat, not the user.
+Files always ask the user first, in every chat, even when the chat would normally send at once, and only the user can approve one, in the menu bar or tray app or the approval dialog. `telegram_confirm_send` can't approve a file. The person asking for the file may be someone in a chat, not the user.
 
 ## Watching a forum group (one topic per project)
 
@@ -118,6 +118,6 @@ These limits are on purpose:
 - You can't change the lists, the footer, the guides or the away auto-reply. Only the user can, in the menu bar or tray app's Contacts page, or in `~/.config/telegram-mcp/config.json`.
 - You can't repoint or remove a nickname that the rules use.
 - You can't send a message that starts with `/reply` or `/bots`.
-- `telegram_send_file` refuses credentials (SSH keys, `.env` files, cloud logins) and telegram-mcp's own session files.
+- `telegram_send_file` refuses credentials (SSH keys, `.env` files, `.git-credentials`, cloud logins, Claude Code's settings) and telegram-mcp's own session files.
 
 If the user wants a rule changed, tell them where to change it. [reference/rules.md](reference/rules.md) explains the rules file.
