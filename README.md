@@ -81,7 +81,7 @@ All in `~/.config/telegram-mcp/` (folder mode 0700; override with `TELEGRAM_MCP_
 
 | File | What |
 | --- | --- |
-| `config.json` | The rules file (below). Edits apply as soon as you save. A broken edit keeps the last good version and shows up in `tgmcp status`. |
+| `config.json` | The rules file (below). Edits apply as soon as you save. A broken edit keeps the last good version and shows up in `tgmcp status`. If it is already broken when the daemon starts, there is no good version to keep: the daemon refuses every send, edit, delete and create (reading still works) until the file is valid, and says so in `tgmcp status`, `telegram_status` and `daemon.log`. |
 | `session.db` | mtcute's session: peer cache, update state, and the auth key sealed with `session-key` |
 | `daemon.log` | The daemon log (`tgmcp logs`) |
 | `recent.json` | The last 20 sent messages (shown in the menu bar) |

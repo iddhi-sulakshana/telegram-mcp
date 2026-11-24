@@ -135,6 +135,18 @@ const CAPTION_MAX = 1024
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const fail = (text: string): ToolResult => ({ text, isError: true })
 
+/** Tools that send, edit, delete or create on Telegram: refused while config.json has not loaded since start. */
+const WRITE_TOOLS: ReadonlySet<ToolName> = new Set<ToolName>([
+  'telegram_send_message',
+  'telegram_send_file',
+  'telegram_send_sticker',
+  'telegram_edit_message',
+  'telegram_delete_message',
+  'telegram_create_topic',
+  'telegram_create_chat',
+  'telegram_confirm_send',
+])
+
 const KIND_HEADINGS = { private: 'Private chats', groups: 'Groups', channels: 'Channels', bots: 'Bots' } as const
 
 export function fmtPeer(p: PeerInfo): string {
@@ -237,6 +249,8 @@ export class Service {
       return this.decide(approvalId, approve, 'dialog', sessionId, { remember, nickname }).catch(e => fail(errText(e)))
     }
     if (!isToolName(method)) return fail(`Unknown tool: ${method}`)
+    const refused = WRITE_TOOLS.has(method) ? this.#writesRefused() : null
+    if (refused) return fail(refused)
     const parsed = TOOLS[method].input.safeParse(params ?? {})
     if (!parsed.success) return fail(`Invalid arguments:\n${z.prettifyError(parsed.error)}`)
     try {
@@ -245,6 +259,20 @@ export class Service {
     } catch (e) {
       return fail(errText(e))
     }
+  }
+
+  /**
+   * The refusal text while config.json has not loaded since start (ConfigStore.writesRefused), else
+   * null. Checked by the write tools up front and again where anything goes out to Telegram.
+   */
+  #writesRefused(): string | null {
+    const why = this.d.store.writesRefused()
+    return why ? `Refused: ${why}. Nothing is sent, edited, deleted or created until config.json loads; telegram_status shows the error.` : null
+  }
+
+  #assertWritable(): void {
+    const refused = this.#writesRefused()
+    if (refused) throw new Error(refused)
   }
 
   // ---- resolving chats -----------------------------------------------------------
@@ -371,6 +399,8 @@ export class Service {
     countsAsSpeaking = true,
   ): Promise<MessageInfo> {
     const { tg } = this.d
+    const refused = this.#writesRefused()
+    if (refused) return Promise.reject(new Error(refused))
     const sending = sticker
       ? tg.sendSticker(chatId, sticker, opts)
       : file
@@ -481,6 +511,9 @@ export class Service {
     sessionId: string | null,
     opts: DecideOptions = {},
   ): Promise<ToolResult> {
+    // With no valid config.json since start, an approval is refused and the draft keeps waiting for it.
+    const refused = approve ? this.#writesRefused() : null
+    if (refused) return fail(refused)
     // A new chat is approved only in the menu bar or tray. Refused here without taking the draft, so
     // it keeps waiting there; dropping it (approve false) is fine from anywhere.
     const waiting = this.d.approvals.peek(id)
@@ -1043,6 +1076,7 @@ export class Service {
     }
     let chat: PeerInfo
     try {
+      this.#assertWritable()
       chat = await this.d.tg.createChat({ type: spec.type, title: spec.title, description: spec.description })
     } catch (e) {
       this.d.log?.(`create chat failed after approval: ${what}: ${errText(e)}`)
@@ -1095,6 +1129,7 @@ export class Service {
    * so an edit is never mistaken for what went out.
    */
   async #applyEdit(by: string, chatId: number, messageId: number, text: string, parseMode: 'plain' | 'markdown' | 'html'): Promise<MessageInfo> {
+    this.#assertWritable()
     const edited = await this.d.tg.editMessage(chatId, messageId, text, { parseMode })
     const at = new Date().toISOString()
     this.#recent = this.#recent.map(r =>
@@ -1108,6 +1143,7 @@ export class Service {
 
   /** It is gone from the chat, so it leaves Recently sent too; daemon.log keeps a line for it. */
   async #applyDelete(chatId: number, messageId: number): Promise<void> {
+    this.#assertWritable()
     await this.d.tg.deleteMessage(chatId, messageId)
     this.#recent = this.#recent.filter(r => !(r.chatId === chatId && r.messageId === messageId))
     this.#ownSent.delete(`${chatId}:${messageId}`)
@@ -1343,6 +1379,7 @@ export class Service {
       ]
       if (st.lastError && st.phase !== 'connected') lines.push(`Last error: ${st.lastError}`)
       lines.push(`Config: ${store.path}${store.error() ? `\n  ${store.error()}` : ''}`)
+      if (store.writesRefused()) lines.push('Writes: REFUSED (no valid config.json since the daemon started). Reading still works; fix config.json and it reloads by itself.')
       const watches = hub.watches(sid)
       lines.push(`This session: ${sid}`)
       lines.push(
@@ -1570,6 +1607,7 @@ export class Service {
           `No topic created in ${t.label}: ${decision.reason}. Topics are only created where sending is automatic; ask the user to create it, or to put this chat on autoSend.`,
         )
       }
+      this.#assertWritable()
       const topic = await this.d.tg.createTopic(t.peer.id, p.title)
       this.d.log?.(`create topic: "${p.title}" (${topic.id}) in ${t.label} (${t.peer.id}) by ${this.d.hub.label(sid)}`)
       return { text: `Created topic "${p.title}" in ${t.label}: topic id ${topic.id}. Allowed because ${decision.reason}.` }

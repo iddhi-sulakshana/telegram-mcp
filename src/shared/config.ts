@@ -329,6 +329,8 @@ function writeAtomic(path: string, text: string) {
 export class ConfigStore {
   #config: Config
   #error: string | null = null
+  /** Set while no valid config.json has loaded since start: the daemon then refuses every write. */
+  #unloaded: string | null = null
   #watcher: FSWatcher | null = null
   #timer: ReturnType<typeof setTimeout> | null = null
   readonly path: string
@@ -336,7 +338,10 @@ export class ConfigStore {
   constructor(path: string, private readonly log: (msg: string) => void = () => {}) {
     this.path = path
     if (!existsSync(path)) writeAtomic(path, DEFAULT_CONFIG_TEXT)
-    this.#config = ConfigSchema.parse({})
+    // Nothing loaded yet. Until a valid file does, nothing is sent (see writesRefused); these defaults
+    // only fill the gap, and block anything off the lists in case a path forgets to check.
+    this.#config = ConfigSchema.parse({ defaultPolicy: 'block' })
+    this.#unloaded = 'config.json has not loaded yet'
     this.reload()
   }
 
@@ -348,14 +353,38 @@ export class ConfigStore {
     return this.#error
   }
 
+  /**
+   * Why nothing may be sent, edited, deleted or created, or null. Set when config.json was invalid at
+   * start: the rules that should apply are unknown, so the daemon fails closed until a valid file loads.
+   * A bad edit after a good start keeps the last good config instead, and this stays null.
+   */
+  writesRefused(): string | null {
+    return this.#unloaded
+  }
+
   reload(): void {
     try {
       this.#config = parseConfig(readFileSync(this.path, 'utf8'))
       this.#error = null
+      this.#loaded()
     } catch (e) {
-      this.#error = `config.json is invalid, still using the previous version: ${e instanceof Error ? e.message : e}`
+      const why = e instanceof Error ? e.message : String(e)
+      if (this.#unloaded) {
+        this.#unloaded = `config.json is invalid, so every send, edit, delete and create is refused until it is fixed: ${why}`
+        this.#error = this.#unloaded
+      } else {
+        this.#error = `config.json is invalid, still using the previous version: ${why}`
+      }
       this.log(this.#error)
     }
+  }
+
+  #loaded(): void {
+    if (!this.#unloaded) return
+    const was = this.#unloaded
+    this.#unloaded = null
+    // Only worth a line when it was refusing; a normal start loads straight away.
+    if (was !== 'config.json has not loaded yet') this.log('config.json is valid again: sends, edits, deletes and creates are allowed')
   }
 
   /** Re-reads the file first so a hand edit made a moment ago isn't overwritten. */
@@ -366,6 +395,7 @@ export class ConfigStore {
     writeAtomic(this.path, `${JSON.stringify(checked, null, 2)}\n`)
     this.#config = checked
     this.#error = null
+    this.#loaded()
     return checked
   }
 

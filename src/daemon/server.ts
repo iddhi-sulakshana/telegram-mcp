@@ -235,7 +235,7 @@ export function startServer(o: ServerOptions) {
           pid: process.pid,
           startedAt: new Date(o.startedAt).toISOString(),
           telegram: o.tg.state(),
-          config: { path: o.store.path, error: o.store.error() },
+          config: { path: o.store.path, error: o.store.error(), writesRefused: o.store.writesRefused() !== null },
           secrets: o.secrets,
           menubar: o.service.uiActive(),
           sessions: o.hub.summary(),
