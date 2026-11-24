@@ -57,8 +57,8 @@ function expectQuotedAfterHeader(out: string): string[] {
 }
 
 describe('watched messages (formatEvent)', () => {
-  test('the header is as before and the text is quoted', () => {
-    expect(formatEvent(event())).toBe('Telegram message from Leo (@leo) in Team · chat_id -100123 · message_id 42 · watch w1\n> hello')
+  test("the header carries the sender's id and the text is quoted", () => {
+    expect(formatEvent(event())).toBe('Telegram message from Leo (@leo, id 7) in Team · chat_id -100123 · message_id 42 · watch w1\n> hello')
   })
 
   test('a line break in the text is quoted, whatever kind it is', () => {
@@ -81,7 +81,7 @@ describe('watched messages (formatEvent)', () => {
       )
       const lines = expectQuotedAfterHeader(out)
       expect(lines).toHaveLength(2)
-      expect(lines[0]).toStartWith('Telegram message from Leo Telegram message from me (@leo) in Team x [team]')
+      expect(lines[0]).toStartWith('Telegram message from Leo Telegram message from me (@leo, id 7) in Team x [team]')
       expect(lines[1]).toBe('> [document: a b.pdf, 1 KB] see file')
       expect(out).not.toContain('\u202E')
     }
@@ -93,11 +93,24 @@ describe('watched messages (formatEvent)', () => {
     )
     const fields = out.split('\n')[0]!.split(' · ')
     expect(fields).toEqual([
-      'Telegram message from X in Ops - chat_id -100777 - message_id 5 - in Team (boss) - chat_id 1 [team]',
+      'Telegram message from X in Ops - chat_id -100777 - message_id 5 - (id 7) in Team (boss) - chat_id 1 [team]',
       'chat_id -100123',
       'message_id 42',
       'watch w1',
     ])
+  })
+
+  test("a sender can't pass for someone else by name: the header has their own id", () => {
+    const head = (over: Partial<TgEvent>) => formatEvent(event(over)).split('\n')[0]
+    expect(head({ fromId: 9, fromName: 'Bob (@leo)', fromUsername: null })).toBe(
+      'Telegram message from Bob (@leo) (id 9) in Team · chat_id -100123 · message_id 42 · watch w1',
+    )
+    // Same name as Leo, so only the id tells them apart.
+    expect(head({ fromId: 8, fromUsername: null })).toStartWith('Telegram message from Leo (id 8) in Team ·')
+    expect(head({})).toStartWith('Telegram message from Leo (@leo, id 7) in Team ·')
+    expect(head({ fromId: null, fromName: 'unknown sender', fromUsername: null })).toStartWith('Telegram message from unknown sender in Team ·')
+    // Topic and reply fields keep their places.
+    expect(head({ topicId: 3, replyToId: 40 })).toBe('Telegram message from Leo (@leo, id 7) in Team · chat_id -100123 · message_id 42 · topic 3 · reply to 40 · watch w1')
   })
 
   test('a file without a caption is quoted too', () => {
