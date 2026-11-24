@@ -37,7 +37,7 @@ const daemon = await createDaemon({ paths, port, telegram: tg, log: () => {} })
 
 function session(label: string) {
   const c = new DaemonClient({
-    url: () => `ws://127.0.0.1:${port}/bridge?token=${daemon.token}`,
+    target: () => ({ url: `ws://127.0.0.1:${port}/bridge`, token: daemon.token }),
     sessionId: `s_${label.padEnd(8, 'x').slice(0, 8)}`,
     label,
     channel: false,
