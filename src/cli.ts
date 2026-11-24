@@ -426,6 +426,11 @@ switch (cmd) {
       console.log('usage: tgmcp call <tool> [json-args]')
       process.exit(1)
     }
+    // __decide, __await_approval and the like are the proxy's own calls (its dialog's answer), never a tool.
+    if (tool.startsWith('__')) {
+      console.error(`tgmcp call runs tools only; ${tool} is internal to the MCP proxy.`)
+      process.exit(1)
+    }
     const { DaemonClient } = await import('./mcp/daemon-client')
     const { newId } = await import('./daemon/sessions')
     const secrets = openSecretStore(getPaths())

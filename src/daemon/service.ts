@@ -150,7 +150,8 @@ function clip(s: string, n: number): string {
 
 export function fmtMessage(m: MessageInfo): string {
   // Anyone else carries their id, so a display name like "me" can't pass for the user's own messages.
-  const who = m.outgoing ? 'me' : m.from ? `${oneLine(m.from.name)} (${m.from.username ? `@${m.from.username}, ` : ''}id ${m.from.id})` : 'unknown'
+  // The name loses its own brackets, so "Leo (@leo, id 1)" can't show an id ahead of the real one.
+  const who = m.outgoing ? 'me' : m.from ? `${fieldName(m.from.name)} (${m.from.username ? `@${m.from.username}, ` : ''}id ${m.from.id})` : 'unknown'
   const marks = [m.replyToId ? `reply to #${m.replyToId}` : null, m.topicId ? `topic ${m.topicId}` : null].filter(Boolean)
   // Every line of the text is quoted, so none of it can pass for the next message's line.
   return `#${m.id} ${m.date.slice(0, 16).replace('T', ' ')} ${who}${marks.length ? ` (${marks.join(', ')})` : ''}: ${quoted(messageBody(m.text, m.media, '[empty]'))}`
@@ -192,6 +193,11 @@ export class Service {
     return this.d.mcpHome ?? join(homedir(), '.config', 'telegram-mcp')
   }
 
+  /** What checkSendable needs, with the owner's protected folders as config.json says now. */
+  #sendable() {
+    return { mcpHome: this.#mcpHome, protectedDirs: this.d.store.get().files.protectedDirs }
+  }
+
   constructor(private readonly d: ServiceDeps) {
     if (d.recentPath) {
       try {
@@ -207,11 +213,26 @@ export class Service {
       return (await this.d.approvals.wait(approvalId)).result
     }
     if (method === '__decide') {
-      const { approvalId, approve, remember, nickname } = params as { approvalId: string; approve: boolean } & DecideOptions
+      const { approvalId, approve, remember, nickname, dialogKey } = params as {
+        approvalId: string
+        approve: boolean
+        dialogKey?: unknown
+      } & DecideOptions
+      const waiting = this.d.approvals.peek(approvalId)
       // The proxy only shows its dialog for drafts the menu bar isn't showing. One the menu bar
       // shows is decided there, so a dialog answer for it is refused and it keeps waiting.
-      if (this.d.approvals.peek(approvalId)?.askedInUi) {
+      if (waiting?.askedInUi) {
         return fail(`${approvalId} is waiting for the user in the menu bar or tray app. Only they can decide it there.`)
+      }
+      // Anything holding the daemon's token can open a bridge and say this; only the proxy whose
+      // dialog the user answered has the draft's key. Refused without taking the draft.
+      if (waiting && !this.d.approvals.dialogKeyMatches(approvalId, dialogKey)) {
+        this.d.log?.(
+          `dialog answer for ${approvalId} refused: it did not carry that draft's dialog key (sent by ${this.d.hub.label(sessionId)}; the draft is ${waiting.sessionLabel}'s)`,
+        )
+        return fail(
+          `${approvalId} can only be decided in the Claude Code dialog of the session that asked for it, or by the user in the menu bar or tray app. It is still waiting.`,
+        )
       }
       return this.decide(approvalId, approve, 'dialog', sessionId, { remember, nickname }).catch(e => fail(errText(e)))
     }
@@ -498,7 +519,7 @@ export class Service {
       } else {
         try {
           // The file may have changed or moved while it waited.
-          const file = item.file ? checkSendable(item.file.path, { mcpHome: this.#mcpHome }) : undefined
+          const file = item.file ? checkSendable(item.file.path, this.#sendable()) : undefined
           if (file && item.fileDigest && (await fileDigest(file.path)) !== item.fileDigest) {
             throw new Error(`${file.path} changed after approval was asked, so it was not sent. Ask again to send the current version.`)
           }
@@ -769,7 +790,7 @@ export class Service {
   ): Promise<ToolResult> {
     const config = this.d.store.get()
     const t = await this.#resolve(p.to, true)
-    const file = draft.file ? checkSendable(draft.file, { mcpHome: this.#mcpHome }) : undefined
+    const file = draft.file ? checkSendable(draft.file, this.#sendable()) : undefined
     const topicId = p.topicId ?? t.entry?.topicId
     if (looksLikeReplyCommand(visibleText(draft.text, p.parseMode))) return fail('Not sent: a message starting with /reply would start a takeover. Reword it.')
     if (looksLikeBotsCommand(visibleText(draft.text, p.parseMode))) return fail('Not sent: a message starting with /bots is a moderator command, which only a person types. Reword it.')
@@ -870,6 +891,8 @@ export class Service {
         text: asked,
         reason: decision.reason,
         uiActive,
+        // The proxy's own: it shows the dialog, and only its answer may decide it.
+        ...(uiActive ? {} : { dialogKey: pending.dialogKey }),
         firstTime,
         nickname,
         suggestedNickname: pending.suggestedNickname,
@@ -947,6 +970,7 @@ export class Service {
         text: change.text,
         reason,
         uiActive,
+        ...(uiActive ? {} : { dialogKey: pending.dialogKey }),
         firstTime: false,
         nickname,
         suggestedNickname: pending.suggestedNickname,

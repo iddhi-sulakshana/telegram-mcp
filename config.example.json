@@ -42,5 +42,8 @@
   },
   "chatCreation": {
     "enabled": false
+  },
+  "files": {
+    "protectedDirs": ["~/work/clients", "/srv/backups"]
   }
 }

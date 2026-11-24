@@ -229,7 +229,7 @@ describe('watching', () => {
     from(LEO.id, 'three')
     const heads = (await svc.call('s1', 'telegram_get_events', {})).text.split('\n').filter(l => l.startsWith('Telegram message from'))
     expect(heads.map(h => h.split(' in Team QA')[0])).toEqual([
-      'Telegram message from Bob (@leo) (id 60)',
+      'Telegram message from Bob @leo (id 60)',
       'Telegram message from Leo Perera (id 61)',
       'Telegram message from Leo Perera (@leo_p, id 10)',
     ])
@@ -240,7 +240,7 @@ describe('watching', () => {
     from(60, 'four')
     from(61, 'five')
     expect(frames.map(f => f.split('\n')[0]!.split(' · ')[0])).toEqual([
-      `Telegram message from Bob (@leo) (id 60) in Team QA [qa]`,
+      `Telegram message from Bob @leo (id 60) in Team QA [qa]`,
       `Telegram message from Leo Perera (id 61) in Team QA [qa]`,
     ])
   })
@@ -315,6 +315,14 @@ describe('menu bar approvals and the sent log', () => {
     expect(store.get().rules.autoSend).not.toContain('qa')
   })
 
+  test('a menu bar approval needs no dialog key', async () => {
+    const r = await svc.call('s1', 'telegram_send_message', { to: 'qa', text: 'QA please' })
+    expect(r.approval?.dialogKey).toBeDefined()
+    const decided = await svc.decide(r.approval!.id, true, 'menubar', null)
+    expect(decided.isError).toBeFalsy()
+    expect(tg.sent).toHaveLength(1)
+  })
+
   test('deny sends nothing and a second decision is refused', async () => {
     const r = await svc.call('s1', 'telegram_send_message', { to: 'qa', text: 'x' })
     expect(r.approval?.uiActive).toBe(false)
@@ -331,6 +339,87 @@ describe('menu bar approvals and the sent log', () => {
     expect(recent[0]!.text).toStartWith('m22')
     expect(recent[19]!.text).toStartWith('m3')
     expect(recent[0]).toMatchObject({ chatLabel: 'Leo Perera [leo]', via: 'auto', sessionLabel: 'one' })
+  })
+})
+
+describe("the dialog's answer needs the draft's key", () => {
+  let logs: string[]
+  beforeEach(() => {
+    setup(baseConfig)
+    logs = []
+    svc = new Service({ store, tg, hub, approvals: new Approvals(), eventsUrl: () => 'ws://x', log: m => logs.push(m) })
+  })
+
+  test('only the asking session gets a key, and only when its dialog decides', async () => {
+    const r = await svc.call('s1', 'telegram_send_message', { to: 'qa', text: 'QA please' })
+    expect(r.approval?.uiActive).toBe(false)
+    expect(r.approval!.dialogKey).toMatch(/^[0-9a-f]{64}$/)
+    const other = await svc.call('s1', 'telegram_send_message', { to: 'qa', text: 'again' })
+    expect(other.approval!.dialogKey).not.toBe(r.approval!.dialogKey)
+    // With the menu bar running it decides, so there is no key to hand out.
+    svc.touchUi()
+    const shown = await svc.call('s1', 'telegram_send_message', { to: 'qa', text: 'shown' })
+    expect(shown.approval?.uiActive).toBe(true)
+    expect(shown.approval!.dialogKey).toBeUndefined()
+  })
+
+  test('without the key, or with a wrong one, the answer is refused and logged, even with no menu bar', async () => {
+    const r = await svc.call('s1', 'telegram_send_message', { to: 'qa', text: 'QA please' })
+    const id = r.approval!.id
+    const key = r.approval!.dialogKey!
+    const wrong = [undefined, '', 'x'.repeat(64), key.slice(0, -1), `${key}0`, 42, { key }]
+    for (const dialogKey of wrong) {
+      for (const sid of ['s1', 's2']) {
+        const d = await svc.call(sid, '__decide', { approvalId: id, dialogKey, approve: true, remember: 'autoSend' })
+        expect(d.isError).toBe(true)
+        expect(d.text).toContain('It is still waiting')
+      }
+    }
+    expect(tg.sent).toHaveLength(0)
+    expect(store.get().rules.autoSend).not.toContain('qa')
+    expect(svc.uiState().approvals.map(a => a.id)).toEqual([id])
+    const refusals = logs.filter(l => l.startsWith(`dialog answer for ${id} refused`))
+    expect(refusals).toHaveLength(wrong.length * 2)
+    expect(refusals[1]).toContain('sent by two')
+    // A decline without the key is refused too: nothing else may drop the user's dialog either.
+    expect((await svc.call('s2', '__decide', { approvalId: id, approve: false })).isError).toBe(true)
+    expect(svc.uiState().approvals).toHaveLength(1)
+
+    const ok = await svc.call('s1', '__decide', { approvalId: id, dialogKey: key, approve: true })
+    expect(ok.isError).toBeFalsy()
+    expect(tg.sent).toHaveLength(1)
+  })
+
+  test("another session holding the key still can't take the draft", async () => {
+    const r = await svc.call('s1', 'telegram_send_message', { to: 'qa', text: 'QA please' })
+    const d = await svc.call('s2', '__decide', { approvalId: r.approval!.id, dialogKey: r.approval!.dialogKey, approve: true })
+    expect(d.isError).toBe(true)
+    expect(d.text).toContain('another session')
+    expect(tg.sent).toHaveLength(0)
+  })
+
+  test('the key is never in the text the model sees, a log line or /ui/state', async () => {
+    const r = await svc.call('s1', 'telegram_send_message', { to: 'qa', text: 'QA please' })
+    const key = r.approval!.dialogKey!
+    await svc.call('s2', '__decide', { approvalId: r.approval!.id, dialogKey: 'nope', approve: true })
+    const edit = await svc.call('s1', 'telegram_send_message', { to: 'leo', text: 'hi' })
+    svc.editContact({ nickname: 'leo', sendMode: 'requireApproval' })
+    const change = await svc.call('s1', 'telegram_edit_message', { chat: 'leo', messageId: Number(/message #(\d+)/.exec(edit.text)![1]), text: 'hey' })
+    const changeKey = change.approval!.dialogKey!
+    expect(changeKey).toMatch(/^[0-9a-f]{64}$/)
+    const seen = [r.text, change.text, JSON.stringify(svc.uiState()), ...logs].join('\n')
+    expect(seen).not.toContain(key)
+    expect(seen).not.toContain(changeKey)
+    const done = await svc.call('s1', '__decide', { approvalId: change.approval!.id, dialogKey: changeKey, approve: true })
+    expect(done.isError).toBeFalsy()
+    expect(done.text).not.toContain(changeKey)
+  })
+
+  test('telegram_confirm_send keeps its rules: it needs no key', async () => {
+    const r = await svc.call('s1', 'telegram_send_message', { to: 'qa', text: 'QA please' })
+    const ok = await svc.call('s1', 'telegram_confirm_send', { approvalId: r.approval!.id })
+    expect(ok.isError).toBeFalsy()
+    expect(tg.sent).toHaveLength(1)
   })
 })
 
@@ -890,7 +979,7 @@ describe('editing a sent message', () => {
     const file = join(mkdtempSync(join(tmpdir(), 'tgmcp-')), 'report.pdf')
     writeFileSync(file, '%PDF-1.7 hello')
     const asked = await svc.call('s1', 'telegram_send_file', { to: 'leo', path: file, caption: 'Q3' })
-    const sent = await svc.call('s1', '__decide', { approvalId: asked.approval!.id, approve: true })
+    const sent = await svc.call('s1', '__decide', { approvalId: asked.approval!.id, dialogKey: asked.approval!.dialogKey, approve: true })
     const id = Number(/message #(\d+)/.exec(sent.text)![1])
     const r = await svc.call('s1', 'telegram_edit_message', { chat: 'leo', messageId: id, text: 'new caption' })
     expect(r.isError).toBe(true)
@@ -1274,7 +1363,7 @@ describe('deleting a sent message', () => {
     const file = join(mkdtempSync(join(tmpdir(), 'tgmcp-')), 'report.pdf')
     writeFileSync(file, '%PDF-1.7 hello')
     const asked = await svc.call('s1', 'telegram_send_file', { to: 'leo', path: file, caption: 'Q3' })
-    const sent = await svc.call('s1', '__decide', { approvalId: asked.approval!.id, approve: true })
+    const sent = await svc.call('s1', '__decide', { approvalId: asked.approval!.id, dialogKey: asked.approval!.dialogKey, approve: true })
     const id = Number(/message #(\d+)/.exec(sent.text)![1])
     const r = await svc.call('s1', 'telegram_delete_message', { chat: 'leo', messageId: id })
     expect(r.approval).toMatchObject({ action: 'delete', messageId: id })
@@ -1287,7 +1376,7 @@ describe('deleting a sent message', () => {
     const file = join(mkdtempSync(join(tmpdir(), 'tgmcp-')), 'report.pdf')
     writeFileSync(file, '%PDF-1.7 hello')
     const asked = await svc.call('s1', 'telegram_send_file', { to: 'leo', path: file, caption: 'Q3' })
-    const sent = await svc.call('s1', '__decide', { approvalId: asked.approval!.id, approve: true })
+    const sent = await svc.call('s1', '__decide', { approvalId: asked.approval!.id, dialogKey: asked.approval!.dialogKey, approve: true })
     const fileId = Number(/message #(\d+)/.exec(sent.text)![1])
     const textId = await sentId('leo')
     await svc.call('s1', 'telegram_watch', { chat: 'leo' })

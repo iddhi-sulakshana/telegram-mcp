@@ -51,7 +51,7 @@ tgmcp status
 
 **Upgrading** a release: run the installer again, then `tgmcp install && tgmcp menubar` to restart both on the new version. Each new version is a new program to macOS, so it asks once more whether tgmcp and "Telegram MCP" may use the "telegram-mcp" Keychain item: choose **Always Allow**. **Moving from a checkout to a release**: `tgmcp install` points the launchd agent at whichever `tgmcp` runs it, so check `which tgmcp` (a `bun link` in `~/.bun/bin` may come first on your PATH), then run `tgmcp install`, `tgmcp menubar` and `tgmcp mcp-add` again. Your config, login and secrets stay where they are.
 
-`tgmcp call <tool> '<json>'` runs any tool as a one-off session, e.g. `tgmcp call telegram_get_rules`.
+`tgmcp call <tool> '<json>'` runs any tool as a one-off session, e.g. `tgmcp call telegram_get_rules`. It runs the listed tools only: names starting with `__` are the MCP proxy's own calls (such as the dialog's answer) and are refused.
 
 API credentials come from `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` if set, otherwise the OS keystore (`tgmcp login` saves them there). Get them at https://my.telegram.org → API development tools.
 
@@ -127,6 +127,14 @@ Downloads go to `~/Downloads/telegram-mcp/<chat>/` (`TELEGRAM_MCP_DOWNLOADS`), n
 
 As a safety net, the send check also refuses common credential files (SSH keys, `.env` files, `.git-credentials`, cloud logins, `~/.claude`), a file with more than one hard link, and this tool's own files. That list can't name every secret on your machine: what protects you is the approval, so read the path on the card before you send.
 
+**Your own protected folders.** Add folders whose files are never sent under `files.protectedDirs` in `config.json`, each absolute or starting with `~`:
+
+```json
+"files": { "protectedDirs": ["~/work/clients", "/srv/backups"] }
+```
+
+A file anywhere inside one is refused like a file in `~/.ssh`, before any approval and again when you approve: links are resolved first (a link to the folder, or to a file in it, counts), and on Windows and macOS the letter case doesn't matter. Only you set it, by editing `config.json`; no tool can change it, and the daemon picks up an edit at once. A relative path or one like `~bob/x` makes the config invalid, and the daemon keeps the last good one.
+
 **First message to a new chat.** A chat that is on neither `autoSend` nor `requireApproval` always needs approval. The approval also asks what should happen next time:
 - **Always allow** puts it on `autoSend`.
 - **Ask every time** puts it on `requireApproval`.
@@ -135,7 +143,7 @@ Approving also saves the chat under `chats`, with a suggested nickname you can e
 
 **Approval** happens in the first place available:
 1. The **menu bar app**, when it's running. The draft appears there and as a notification. Both offer Approve / Deny, or Deny / Ask every time / Always allow for a new chat. The Claude tool call waits for your click: Claude Code backgrounds it after 2 minutes, and the result arrives when you decide.
-2. A **Claude Code dialog** showing the exact recipient and text, plus the next-time choice and nickname for a new chat.
+2. A **Claude Code dialog** showing the exact recipient and text, plus the next-time choice and nickname for a new chat. Each draft has its own key, which the daemon gives only to the proxy of the session that asked; the dialog's answer must carry it, so another program holding the daemon's token (`tgmcp call`, a second bridge posing as that session) can't answer the dialog for you. The key never shows in tool results, `daemon.log` or `/ui/state`.
 3. **In chat**: the tool returns an approval id. The model must ask you before it calls `telegram_confirm_send`. Here the model's word is the only check, so this path is narrower: it can't confirm a draft that is waiting in the menu bar app (even after Claude Code backgrounds the call), and a first message approved here always saves the chat as "ask every time". Only you can make a chat "always allow", in the menu bar's Contacts page, an approval there, the dialog, or `config.json`.
 
 Nothing is sent unless you accept. Drafts expire after 20 minutes. The rules are checked again at send time.
@@ -175,7 +183,7 @@ Nothing is sent unless you accept. Drafts expire after 20 minutes. The rules are
 
 `telegram_watch` subscribes the session to a chat on the autoReply list until it calls `telegram_unwatch` or ends. Each new incoming message reaches every subscribed session once, by the first of these that is available to that session:
 
-1. **Monitor** (the default): `telegram_watch` returns a `ws://127.0.0.1…/events?session=…&key=…` URL, and Claude opens its Monitor tool on it. The key opens that one session's stream and nothing else, so the URL (which Claude Code keeps in its transcripts) never carries the token. Each message becomes a notification in the session: a one-line header such as `Telegram message from Anna (@anna, id 123) in Team QA [qa] · chat_id … · message_id … · topic … · reply to … · watch …`, then the text with every line quoted (`> `). The sender's numeric id is always there, so two people with the same display name, or one named like someone else, can still be told apart. A Monitor stops after 30 minutes, or when the daemon restarts. Claude is told to restart it straight away with the same URL whenever it ends while watches are active (`telegram_status` shows the URL again). Nothing is lost in between, because messages queue up and are flushed when the Monitor reconnects.
+1. **Monitor** (the default): `telegram_watch` returns a `ws://127.0.0.1…/events?session=…&key=…` URL, and Claude opens its Monitor tool on it. The key opens that one session's stream and nothing else, so the URL (which Claude Code keeps in its transcripts) never carries the token. Each message becomes a notification in the session: a one-line header such as `Telegram message from Anna (@anna, id 123) in Team QA [qa] · chat_id … · message_id … · topic … · reply to … · watch …`, then the text with every line quoted (`> `). The sender's numeric id is always there, so two people with the same display name, or one named like someone else, can still be told apart. Names lose their own brackets (`( )`, `[ ]` and look-alikes become spaces), so the only `(…id N)` on the line is the real one: a sender named `Leo (@leo, id 1188107983)` shows as `Leo @leo, id 1188107983 (id 555)`. A Monitor stops after 30 minutes, or when the daemon restarts. Claude is told to restart it straight away with the same URL whenever it ends while watches are active (`telegram_status` shows the URL again). Nothing is lost in between, because messages queue up and are flushed when the Monitor reconnects.
 2. **Channel push** (optional: `tgmcp mcp --channel`, plus `claude --dangerously-load-development-channels server:<name>`): messages appear in the session by themselves as `<channel>` events, with no Monitor needed. This uses Claude Code's channels research preview.
 3. **Queue**: `telegram_get_events` drains it. Every other tool result also mentions when messages are waiting.
 

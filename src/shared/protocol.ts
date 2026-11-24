@@ -131,6 +131,11 @@ export interface ApprovalRequest {
   reason: string
   /** The menu bar app is running, so the decision is made there. */
   uiActive: boolean
+  /**
+   * Set only when uiActive is false: the key the proxy sends back with its dialog's answer (__decide).
+   * It reaches only the session that asked, and the proxy never shows it to the model.
+   */
+  dialogKey?: string
   /** First message to a chat on neither autoSend nor requireApproval: the approver also picks which list it joins. */
   firstTime: boolean
   nickname: string | null

@@ -1,3 +1,4 @@
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import type { OutgoingFile } from '../shared/media'
 import type { ApprovalAction, PeerInfo, ToolResult } from '../shared/protocol'
 import type { StickerRef } from './telegram'
@@ -60,6 +61,13 @@ export interface PendingSend {
    * the waiting tool call.
    */
   askedInUi: boolean
+  /**
+   * The draft's own key, made when it is created. Only the session that asked gets it, in its tool
+   * result (ApprovalRequest.dialogKey), and only when its Claude Code dialog decides (no menu bar or
+   * tray running). A dialog answer (__decide) must carry it, so nothing else holding the daemon's
+   * token can answer for that dialog. Never in text the model sees, in a log line or in /ui/state.
+   */
+  dialogKey: string
 }
 
 export type Remember = 'autoSend' | 'requireApproval'
@@ -91,8 +99,8 @@ export class Approvals {
     private readonly now: () => number = Date.now,
   ) {}
 
-  create(p: Omit<PendingSend, 'id' | 'createdAt'>): PendingSend {
-    const item = { ...p, id: newId('a_'), createdAt: this.now() }
+  create(p: Omit<PendingSend, 'id' | 'createdAt' | 'dialogKey'>): PendingSend {
+    const item = { ...p, id: newId('a_'), createdAt: this.now(), dialogKey: randomBytes(32).toString('hex') }
     this.#items.set(item.id, item)
     return item
   }
@@ -101,6 +109,14 @@ export class Approvals {
   peek(id: string): PendingSend | undefined {
     const item = this.#items.get(id)
     return item && this.now() - item.createdAt <= this.ttlMs ? item : undefined
+  }
+
+  /** Whether `key` is this waiting draft's dialog key. False for anything else, a draft that isn't waiting included. */
+  dialogKeyMatches(id: string, key: unknown): boolean {
+    const item = this.peek(id)
+    if (!item || typeof key !== 'string') return false
+    const [a, b] = [Buffer.from(key), Buffer.from(item.dialogKey)]
+    return a.length === b.length && timingSafeEqual(a, b)
   }
 
   list(): PendingSend[] {

@@ -17,11 +17,20 @@ export function oneLine(text: string): string {
 const FIELD_SEP = /[\u00b7\u0387\u2022\u2027\u2219\u22c5\u30fb\uff65]/gu
 
 /**
- * A name placed among a header line's fields, like "Anna in Team QA [qa] · chat_id …": one line, with
- * no field separator or square brackets of its own, so it can't add a field or pass for a nickname.
+ * Round and square brackets, and characters that look like them (fullwidth, small, super- and
+ * subscript, ornate, white and the like). Our header lines put a name's id and username in round
+ * brackets and a saved nickname in square ones.
+ */
+const BRACKETS =
+  /[()[\]\uff08\uff09\uff3b\uff3d\ufe59\ufe5a\ufe5d\ufe5e\u207d\u207e\u208d\u208e\ufd3e\ufd3f\u2768-\u276b\u27ee\u27ef\u27e6\u27e7\u2985\u2986\u2e28\u2e29\u3014\u3015\u3018\u3019\u301a\u301b]/gu
+
+/**
+ * A name placed among a header line's fields, like "Anna (@anna, id 123) in Team QA [qa] · chat_id …":
+ * one line, with no field separator and no brackets of its own (each becomes a space), so it can't add
+ * a field, pass for a nickname, or show an id of its own ahead of the real "(id N)".
  */
 export function fieldName(text: string): string {
-  return oneLine(text.replace(FIELD_SEP, '-').replace(/[[\uff3b]/g, '(').replace(/[\]\uff3d]/g, ')'))
+  return oneLine(text.replace(FIELD_SEP, '-').replace(BRACKETS, ' '))
 }
 
 /** Someone else's text shown in double quotes on a header line: a field name whose own quotes are single. */

@@ -220,6 +220,50 @@ describe('proxy <-> daemon', () => {
     await client.close()
   })
 
+  test("a bridge posing as the session can't answer its dialog without the draft's key", async () => {
+    // Before the menu bar tests: no app is polling, so the draft is the dialog's to decide.
+    const before = tg.sent.length
+    const client = await spawnProxy()
+    const draft = await call(client, 'telegram_send_message', { to: 'qa', text: 'QA please' })
+    const id = /Approval id: (a_\w+)/.exec(draft.text)?.[1]
+    expect(id).toBeDefined()
+    // The session id is no secret: the Monitor URL carries it.
+    const watch = await call(client, 'telegram_watch', { chat: 'anna' })
+    const sid = new URL(/ws:\/\/\S+/.exec(watch.text)![0]).searchParams.get('session')!
+
+    const { DaemonClient } = await import('../src/mcp/daemon-client')
+    const intruder = new DaemonClient({
+      target: async () => ({ url: `ws://127.0.0.1:${port}/bridge`, token: daemon.token }),
+      sessionId: sid,
+      label: 'intruder',
+      channel: false,
+      log: silent,
+    })
+    intruder.start()
+    for (const dialogKey of [undefined, 'f'.repeat(64)]) {
+      const { result } = await intruder.call('__decide', { approvalId: id, dialogKey, approve: true, remember: 'autoSend' })
+      expect(result.isError).toBe(true)
+      expect(result.text).toContain('still waiting')
+    }
+    intruder.close()
+    expect(tg.sent.length).toBe(before)
+
+    await call(client, 'telegram_unwatch', { all: true })
+    expect((await call(client, 'telegram_cancel_send', { approvalId: id })).isError).toBe(false)
+    await client.close()
+  })
+
+  test('tgmcp call refuses the proxy\'s internal calls before reaching the daemon', () => {
+    for (const name of ['__decide', '__await_approval', '__anything']) {
+      const r = Bun.spawnSync({
+        cmd: [process.execPath, resolve(import.meta.dir, '../src/cli.ts'), 'call', name, '{"approvalId":"a_x","approve":true}'],
+        env: { ...(process.env as Record<string, string>), TELEGRAM_MCP_HOME: home, TELEGRAM_MCP_PORT: String(port) },
+      })
+      expect(r.exitCode).toBe(1)
+      expect(r.stderr.toString()).toContain('internal to the MCP proxy')
+    }
+  })
+
   test('watch -> Monitor websocket gets each message; survives a daemon restart', async () => {
     const client = await spawnProxy()
     const w = await call(client, 'telegram_watch', { chat: 'anna' })
