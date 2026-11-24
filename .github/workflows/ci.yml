@@ -9,7 +9,8 @@ permissions:
   contents: read
 
 env:
-  BUN_VERSION: "1.4.0"
+  # 1.4.4, as on the maintainers' machines. 1.4.0 segfaulted on Windows after the test summary.
+  BUN_VERSION: "1.4.4"
 
 jobs:
   test:
@@ -29,6 +30,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
+        # The suite takes seconds; a hang (seen with Bun on Windows) should fail fast, not use the job's 15 minutes.
+        timeout-minutes: 10
 
   menubar:
     # The SwiftUI menu bar app builds on macOS only.
