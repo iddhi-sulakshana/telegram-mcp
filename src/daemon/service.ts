@@ -150,7 +150,8 @@ function clip(s: string, n: number): string {
 
 export function fmtMessage(m: MessageInfo): string {
   // Anyone else carries their id, so a display name like "me" can't pass for the user's own messages.
-  const who = m.outgoing ? 'me' : m.from ? `${oneLine(m.from.name)} (${m.from.username ? `@${m.from.username}, ` : ''}id ${m.from.id})` : 'unknown'
+  // The name loses its own brackets, so "Leo (@leo, id 1)" can't show an id ahead of the real one.
+  const who = m.outgoing ? 'me' : m.from ? `${fieldName(m.from.name)} (${m.from.username ? `@${m.from.username}, ` : ''}id ${m.from.id})` : 'unknown'
   const marks = [m.replyToId ? `reply to #${m.replyToId}` : null, m.topicId ? `topic ${m.topicId}` : null].filter(Boolean)
   // Every line of the text is quoted, so none of it can pass for the next message's line.
   return `#${m.id} ${m.date.slice(0, 16).replace('T', ' ')} ${who}${marks.length ? ` (${marks.join(', ')})` : ''}: ${quoted(messageBody(m.text, m.media, '[empty]'))}`

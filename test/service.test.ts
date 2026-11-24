@@ -229,7 +229,7 @@ describe('watching', () => {
     from(LEO.id, 'three')
     const heads = (await svc.call('s1', 'telegram_get_events', {})).text.split('\n').filter(l => l.startsWith('Telegram message from'))
     expect(heads.map(h => h.split(' in Team QA')[0])).toEqual([
-      'Telegram message from Bob (@leo) (id 60)',
+      'Telegram message from Bob @leo (id 60)',
       'Telegram message from Leo Perera (id 61)',
       'Telegram message from Leo Perera (@leo_p, id 10)',
     ])
@@ -240,7 +240,7 @@ describe('watching', () => {
     from(60, 'four')
     from(61, 'five')
     expect(frames.map(f => f.split('\n')[0]!.split(' · ')[0])).toEqual([
-      `Telegram message from Bob (@leo) (id 60) in Team QA [qa]`,
+      `Telegram message from Bob @leo (id 60) in Team QA [qa]`,
       `Telegram message from Leo Perera (id 61) in Team QA [qa]`,
     ])
   })
