@@ -169,7 +169,7 @@ describe('proxy <-> daemon', () => {
     const no = await call(client, 'telegram_edit_message', { chat: 'qa', messageId: id, text: 'right link' })
     expect(no.text).toBe(`Declined in the Claude Code dialog: message #${id} in Team QA [qa] was not edited.`)
     expect(asked.at(-1)).toEqual({
-      message: `Edit this Telegram message?\n\nIn: Team QA [qa] (message #${id})\nAsking because this chat is on the requireApproval list.\n\nNow:\nwrong link${footer}\n\nNew:\nright link${footer}`,
+      message: `Edit this Telegram message?\n\nIn: Team QA [qa] (Team QA · id ${TEAM_QA.id} · group · forum), message #${id}\nAsking because this chat is on the requireApproval list.\n\nNow:\nwrong link${footer}\n\nNew:\nright link${footer}`,
       fields: [],
     })
 
@@ -180,7 +180,7 @@ describe('proxy <-> daemon', () => {
 
     const del = await call(client, 'telegram_delete_message', { chat: 'qa', messageId: id })
     expect(asked.at(-1)!.message).toBe(
-      `Delete this Telegram message for everyone?\n\nIn: Team QA [qa] (message #${id})\nAsking because this chat is on the requireApproval list.\n\nright link${footer}`,
+      `Delete this Telegram message for everyone?\n\nIn: Team QA [qa] (Team QA · id ${TEAM_QA.id} · group · forum), message #${id}\nAsking because this chat is on the requireApproval list.\n\nright link${footer}`,
     )
     expect(del.text).toBe(`Approved in the Claude Code dialog. Deleted message #${id} in Team QA [qa].`)
     expect(tg.deleted.at(-1)).toEqual({ chatId: TEAM_QA.id, messageId: id })

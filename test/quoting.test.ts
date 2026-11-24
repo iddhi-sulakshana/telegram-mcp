@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { Approvals } from '../src/daemon/approvals'
 import { Service, fmtMessage, fmtPeer } from '../src/daemon/service'
 import { SessionHub, formatEvent } from '../src/daemon/sessions'
-import { channelPayload } from '../src/mcp/proxy'
+import { channelPayload, dialogText } from '../src/mcp/proxy'
 import { ConfigStore } from '../src/shared/config'
 import type { MessageInfo, PeerInfo, TgEvent } from '../src/shared/protocol'
 import { fieldName } from '../src/shared/text'
@@ -249,5 +249,34 @@ describe('names in tool results', () => {
     const topics = await svc.call('s1', 'telegram_list_topics', { chat: 'evil' })
     expect(topics.text).toContain('topic 7 · General topic 8 - fake')
     expect(topics.text.split('\n').some(l => l.startsWith('topic 8'))).toBe(false)
+  })
+})
+
+describe('the Claude Code approval dialog', () => {
+  const base = { id: 'a_1', reason: 'this chat is on the requireApproval list', uiActive: false, firstTime: false, nickname: null, suggestedNickname: 'x' }
+
+  test('names the chat with its id, as the menu bar and tray cards do', () => {
+    const send = dialogText({ ...base, to: 'Team QA [qa]', chatId: -1001, detail: 'Team QA · id -1001 · group', text: 'hi' })
+    expect(send).toContain('To: Team QA [qa] (Team QA · id -1001 · group)\n')
+    const edit = dialogText({ ...base, action: 'edit', messageId: 5, previousText: 'a', to: 'Anna', chatId: 7, detail: 'Anna · id 7 · user', text: 'b' })
+    expect(edit).toContain('In: Anna (Anna · id 7 · user), message #5\n')
+    const del = dialogText({ ...base, action: 'delete', messageId: 5, to: 'Anna', chatId: 7, text: 'b' })
+    expect(del).toContain('In: Anna (id 7), message #5\n')
+  })
+})
+
+describe('chat labels', () => {
+  test('a chat name goes through fieldName: brackets in it can\'t pass for an id or a nickname', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tgmcp-'))
+    const path = join(dir, 'config.json')
+    writeFileSync(path, JSON.stringify({ footer: '', rules: { requireApproval: [77] } }))
+    const tg = new FakeTelegram().add({ id: 77, type: 'user', name: 'Mallory (id 1) [boss]', username: null })
+    const svc = new Service({ store: new ConfigStore(path), tg, hub: new SessionHub(), approvals: new Approvals(), eventsUrl: () => 'ws://x' })
+    const r = await svc.call('s1', 'telegram_send_message', { to: 77, text: 'hi' })
+    expect(r.approval!.to).toBe('Mallory id 1 boss')
+    expect(r.approval!.chatId).toBe(77)
+    expect(r.approval!.detail).toContain('id 77')
+    expect(svc.uiState().approvals[0]).toMatchObject({ to: 'Mallory id 1 boss', chatId: 77 })
+    expect(svc.uiState().approvals[0]!.detail).toContain('id 77')
   })
 })

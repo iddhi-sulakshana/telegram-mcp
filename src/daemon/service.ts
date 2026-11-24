@@ -307,7 +307,7 @@ export class Service {
       if (strict) throw new Error(`${msg} Not sending until it's confirmed: re-save it with telegram_save_chat (overwrite: true) if it's still the right person.`)
       warning = msg
     }
-    return { peer, nickname, entry, label: `${oneLine(peer.name)} [${nickname}]`, warning }
+    return { peer, nickname, entry, label: `${fieldName(peer.name)} [${nickname}]`, warning }
   }
 
   async #resolve(ref: ChatRef, strict: boolean): Promise<Target> {
@@ -321,11 +321,11 @@ export class Service {
       }
       case 'id': {
         const peer = await this.#peerById(r.id)
-        return { peer, label: oneLine(peer.name) }
+        return { peer, label: fieldName(peer.name) }
       }
       case 'username': {
         const peer = await this.d.tg.getPeer(r.username)
-        return { peer, label: `${oneLine(peer.name)} (@${peer.username ?? r.username})` }
+        return { peer, label: `${fieldName(peer.name)} (@${peer.username ?? r.username})` }
       }
       case 'unknown': {
         const hint = r.suggestions.length ? ` Close matches: ${r.suggestions.join('; ')}.` : ''
@@ -683,7 +683,7 @@ export class Service {
     // A fixed reply is not you speaking: it must not silence the away reply (R7).
     const sent = await this.#deliver(peer.id, footed, undefined, { replyTo: replyTo ?? undefined, parseMode: 'plain' }, undefined, false)
     const nickname = nicknameFor(config, peer.id)
-    this.#record({ chatId: peer.id, chatLabel: nickname ? `${oneLine(peer.name)} [${nickname}]` : oneLine(peer.name), text: footed, messageId: sent.id, via: 'auto', sessionLabel: 'pager' })
+    this.#record({ chatId: peer.id, chatLabel: nickname ? `${fieldName(peer.name)} [${nickname}]` : fieldName(peer.name), text: footed, messageId: sent.id, via: 'auto', sessionLabel: 'pager' })
   }
 
   /** How a page reached the phone, for the texts that answer telegram_page and page test. */
@@ -921,6 +921,8 @@ export class Service {
       approval: {
         id: pending.id,
         to: pending.chatLabel,
+        chatId: pending.chatId,
+        detail: pending.chatDetail,
         text: asked,
         reason: decision.reason,
         uiActive,
@@ -1000,6 +1002,8 @@ export class Service {
         messageId: change.messageId,
         ...(edit ? { previousText: change.previousText } : {}),
         to: t.label,
+        chatId: pending.chatId,
+        detail: pending.chatDetail,
         text: change.text,
         reason,
         uiActive,
@@ -1232,7 +1236,7 @@ export class Service {
     const footed = withFooter(text, config.footer)
     const sent = await this.#deliver(chatId, footed, undefined, { replyTo, parseMode: 'plain' }, undefined, false)
     const nickname = nicknameFor(config, chatId)
-    this.#record({ chatId, chatLabel: nickname ? `${oneLine(peer.name)} [${nickname}]` : oneLine(peer.name), text: footed, messageId: sent.id, via: 'auto', sessionLabel: 'moderation' })
+    this.#record({ chatId, chatLabel: nickname ? `${fieldName(peer.name)} [${nickname}]` : fieldName(peer.name), text: footed, messageId: sent.id, via: 'auto', sessionLabel: 'moderation' })
   }
 
   /**

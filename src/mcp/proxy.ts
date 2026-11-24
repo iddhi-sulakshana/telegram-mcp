@@ -40,16 +40,22 @@ function readGuides(path: string): string[] {
 }
 
 /** What Claude Code's approval dialog says: the message to send, the edit (old and new text), or the message to delete. */
-function dialogText(a: ApprovalRequest): string {
+/** The chat as the menu bar and tray cards name it: the label, then its id and the rest of its details. */
+function chatLine(a: ApprovalRequest): string {
+  if (a.detail) return `${a.to} (${a.detail})`
+  return a.chatId !== undefined ? `${a.to} (id ${a.chatId})` : a.to
+}
+
+export function dialogText(a: ApprovalRequest): string {
   const why = `Asking because ${a.reason}.`
   if (a.action === 'edit') {
-    return `Edit this Telegram message?\n\nIn: ${a.to} (message #${a.messageId})\n${why}\n\nNow:\n${a.previousText ?? ''}\n\nNew:\n${a.text}`
+    return `Edit this Telegram message?\n\nIn: ${chatLine(a)}, message #${a.messageId}\n${why}\n\nNow:\n${a.previousText ?? ''}\n\nNew:\n${a.text}`
   }
   if (a.action === 'delete') {
-    return `Delete this Telegram message for everyone?\n\nIn: ${a.to} (message #${a.messageId})\n${why}\n\n${a.text}`
+    return `Delete this Telegram message for everyone?\n\nIn: ${chatLine(a)}, message #${a.messageId}\n${why}\n\n${a.text}`
   }
   if (a.action === 'create') return `Create this Telegram chat?\n\n${why}\n\n${a.text}`
-  return `Send this Telegram message?\n\nTo: ${a.to}\n${why}${a.firstTime ? '\nFirst message to this chat.' : ''}\n\n${a.text}`
+  return `Send this Telegram message?\n\nTo: ${chatLine(a)}\n${why}${a.firstTime ? '\nFirst message to this chat.' : ''}\n\n${a.text}`
 }
 
 export function channelPayload(e: TgEvent) {
