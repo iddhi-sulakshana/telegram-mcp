@@ -858,7 +858,7 @@ export class Service {
         uiActive
           ? 'It is waiting in the menu bar for the user to approve or deny. Only the user can approve it there: do not call telegram_confirm_send for it.'
           : file
-            ? `A file is only sent with the user's yes in the menu bar or tray app, or in Claude Code's approval dialog; telegram_confirm_send can't approve it. Ask the user to open the menu bar or tray app (tgmcp menubar) and send it again, or call telegram_cancel_send.`
+            ? `A file is only sent with the user's yes in the menu bar or tray app, or in Claude Code's approval dialog; telegram_confirm_send can't approve it. This draft is already waiting, for up to ${this.d.approvals.ttlMs / 60_000} minutes: ask the user to open the menu bar or tray app (tgmcp menubar), where it shows for them to approve. Do not send the file again, or it would go out twice. Call telegram_cancel_send if they want to drop it.`
             : `Show the user this exact message and recipient. Only if they say yes, call telegram_confirm_send with the approval id; otherwise telegram_cancel_send.${firstTime ? ' Approving here saves the chat as "ask every time"; only the user can change that to "always allow", in the menu bar / tray app\'s Contacts page or config.json.' : ''}`,
       ]
         .filter(line => line !== null)

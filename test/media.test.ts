@@ -182,6 +182,19 @@ describe('telegram_send_file', () => {
     expect(tg.sentFiles).toHaveLength(0)
   })
 
+  test('with no app open, the result says the draft already waits there, not to send it again', async () => {
+    const { tg, svc, report } = setup()
+    const r = await svc.call('s1', 'telegram_send_file', { to: 'anna', path: report })
+    expect(r.text).toContain('already waiting, for up to 20 minutes')
+    expect(r.text).toContain('Do not send the file again')
+    expect(r.text).not.toContain('send it again')
+    // Once the user opens the app, that same draft is there to approve.
+    svc.touchUi()
+    expect(svc.uiState().approvals.map(a => a.id)).toEqual([r.approval!.id])
+    expect((await svc.decide(r.approval!.id, true, 'menubar', null)).isError).toBeFalsy()
+    expect(tg.sentFiles).toHaveLength(1)
+  })
+
   test('a file replaced while waiting for approval is not sent', async () => {
     const { tg, svc, report } = setup()
     const r = await svc.call('s1', 'telegram_send_file', { to: 'anna', path: report })
