@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerMessage, TgEvent, WatchSpec } from '../shared/protocol'
-import { messageBody, oneLine, quoted } from '../shared/text'
+import { fieldName, messageBody, quoted } from '../shared/text'
 
 export interface Sink {
   send(data: string): unknown
@@ -367,7 +367,8 @@ export class SessionHub {
 
 /** One readable block per message, for Monitor notifications and get_events. */
 export function formatEvent(e: TgEvent): string {
-  const where = oneLine(e.chatNickname ? `${e.chatLabel} [${e.chatNickname}]` : e.chatLabel)
+  // Names sit among the header's fields, so none may bring its own " · " or [nickname].
+  const where = e.chatNickname ? `${fieldName(e.chatLabel)} [${fieldName(e.chatNickname)}]` : fieldName(e.chatLabel)
   if (e.takeover?.action === 'start') {
     return [
       `Takeover: the user typed /reply in ${where} · chat_id ${e.chatId}`,
@@ -387,7 +388,7 @@ export function formatEvent(e: TgEvent): string {
     return `Moderator pause lifted for ${scope}. Watched messages come to you again; carry on only as the user asked when they started the watch.`
   }
   if (e.takeover?.action === 'stop') return `Takeover ended: the user typed /reply stop in ${where} · chat_id ${e.chatId}. Stop replying there.`
-  const who = oneLine(e.fromUsername ? `${e.fromName} (@${e.fromUsername})` : e.fromName)
+  const who = e.fromUsername ? `${fieldName(e.fromName)} (@${e.fromUsername})` : fieldName(e.fromName)
   const head = [
     `Telegram message from ${who} in ${where}`,
     `chat_id ${e.chatId}`,

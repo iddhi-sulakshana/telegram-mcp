@@ -168,6 +168,18 @@ describe('saved chats', () => {
     expect(JSON.parse(readFileSync(path, 'utf8')).chats.leo.id).toBe(LEO.id)
   })
 
+  test('a nickname or alias that could break or flip a line is refused', async () => {
+    tg.add({ id: 51, type: 'user', name: 'Other', username: 'other' })
+    for (const nickname of ['boss\u202eevil', 'boss\u0085x', 'boss\u2028x']) {
+      const r = await svc.call('s1', 'telegram_save_chat', { nickname, chat: '@other' })
+      expect(r.isError).toBe(true)
+    }
+    const alias = await svc.call('s1', 'telegram_save_chat', { nickname: 'other', chat: '@other', aliases: ['x\u202ey'] })
+    expect(alias.isError).toBe(true)
+    expect(alias.text).toContain('Alias')
+    expect(Object.values(JSON.parse(readFileSync(path, 'utf8')).chats).some((e: any) => e.id === 51)).toBe(false)
+  })
+
   test('alias clashes are refused', async () => {
     tg.add({ id: 51, type: 'user', name: 'Other', username: 'other' })
     const r = await svc.call('s1', 'telegram_save_chat', { nickname: 'x', chat: '@other', aliases: ['leonardo'] })
@@ -907,13 +919,15 @@ describe('editing a sent message', () => {
 describe('edit and delete approvals cannot be skipped', () => {
   let now: number
   let approvals: Approvals
+  let logs: string[]
   const TTL = 20 * 60_000
 
   beforeEach(() => {
     setup(baseConfig)
     now = 1_000_000
     approvals = new Approvals(TTL, () => now)
-    svc = new Service({ store, tg, hub, approvals, eventsUrl: () => 'ws://x' })
+    logs = []
+    svc = new Service({ store, tg, hub, approvals, eventsUrl: () => 'ws://x', log: m => logs.push(m) })
   })
 
   /** Messages s1 sent to leo, which then moved to Ask every time. */
@@ -973,6 +987,14 @@ describe('edit and delete approvals cannot be skipped', () => {
       }
       nothingChanged()
       expect(svc.uiState().recent).toEqual(before)
+    })
+
+    test(`a timed-out ${action} gets a line in daemon.log`, async () => {
+      const id = await ownMessage()
+      await svc.call('s1', tool, args(id))
+      now += TTL + 1
+      svc.sweepApprovals()
+      expect(logs.filter(l => l.startsWith(`${action} expired`) && l.includes(`message #${id}`))).toHaveLength(1)
     })
 
     test(`retrying ${action === 'edit' ? 'an edit' : 'a delete'} asks again every time, never runs without a yes`, async () => {

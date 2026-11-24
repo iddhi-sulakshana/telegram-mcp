@@ -27,7 +27,7 @@ import { looksLikeReplyCommand, parseReplyCommand } from '../shared/takeover'
 import { fmtMinutes, looksLikeBotsCommand, moderatorCommand, parseBotsCommand, stopMinutes } from '../shared/moderation'
 import type { IncomingMessage, MessageInfo, PeerInfo, SendMode, SentRecord, TgEvent, ToolResult, UiContact, UiModeration, UiPage, UiState } from '../shared/protocol'
 import { CHAT_KINDS, CHAT_TITLE_MAX, TOOLS, chatKindOf, isToolName, type ToolInput, type ToolName } from '../shared/tools'
-import { messageBody, oneLine, quoted } from '../shared/text'
+import { fieldName, inlineQuote, messageBody, oneLine, quoted } from '../shared/text'
 import { uiAway, type AwayResponder } from './away'
 import type { Approvals, CreateChatSpec, DecideOptions, PendingSend } from './approvals'
 import type { Pause, Pauses } from './moderation'
@@ -138,18 +138,19 @@ const fail = (text: string): ToolResult => ({ text, isError: true })
 const KIND_HEADINGS = { private: 'Private chats', groups: 'Groups', channels: 'Channels', bots: 'Bots' } as const
 
 export function fmtPeer(p: PeerInfo): string {
-  return [oneLine(p.name), p.username ? `@${p.username}` : null, `id ${p.id}`, p.type, p.isForum ? 'forum' : null]
+  return [fieldName(p.name), p.username ? `@${p.username}` : null, `id ${p.id}`, p.type, p.isForum ? 'forum' : null]
     .filter(Boolean)
     .join(' · ')
 }
 
 function clip(s: string, n: number): string {
-  const flat = s.replace(/\s+/g, ' ').trim()
+  const flat = s.replace(/[\s\u0085\u2028\u2029]+/g, ' ').trim()
   return flat.length > n ? `${flat.slice(0, n - 1)}…` : flat
 }
 
 export function fmtMessage(m: MessageInfo): string {
-  const who = m.outgoing ? 'me' : m.from ? oneLine(m.from.username ? `${m.from.name} (@${m.from.username})` : m.from.name) : 'unknown'
+  // Anyone else carries their id, so a display name like "me" can't pass for the user's own messages.
+  const who = m.outgoing ? 'me' : m.from ? `${oneLine(m.from.name)} (${m.from.username ? `@${m.from.username}, ` : ''}id ${m.from.id})` : 'unknown'
   const marks = [m.replyToId ? `reply to #${m.replyToId}` : null, m.topicId ? `topic ${m.topicId}` : null].filter(Boolean)
   // Every line of the text is quoted, so none of it can pass for the next message's line.
   return `#${m.id} ${m.date.slice(0, 16).replace('T', ' ')} ${who}${marks.length ? ` (${marks.join(', ')})` : ''}: ${quoted(messageBody(m.text, m.media, '[empty]'))}`
@@ -440,6 +441,15 @@ export class Service {
     return list === 'autoSend'
       ? ` Saved as "${name}"${note} and whitelisted: next messages there send without asking.`
       : ` Saved as "${name}"${note} with "ask every time": next messages there need approval too.`
+  }
+
+  /** Drops drafts nobody decided in time. A create, edit or delete gets its line in daemon.log, like its other outcomes. */
+  sweepApprovals(): void {
+    const minutes = this.d.approvals.ttlMs / 60_000
+    for (const item of this.d.approvals.sweep()) {
+      if (item.action === 'create') this.d.log?.(`create chat expired (nobody decided within ${minutes} minutes): ${createLogLine(item.create!)}`)
+      else if (item.action) this.d.log?.(`${item.action} expired (nobody decided within ${minutes} minutes): ${changeLogLine(item)}`)
+    }
   }
 
   /** Approve or deny a draft. `sessionId` null = the menu bar, which may decide for any session. */
@@ -849,7 +859,7 @@ export class Service {
         uiActive
           ? 'It is waiting in the menu bar for the user to approve or deny. Only the user can approve it there: do not call telegram_confirm_send for it.'
           : file
-            ? `A file is only sent with the user's yes in the menu bar or tray app, or in Claude Code's approval dialog; telegram_confirm_send can't approve it. Ask the user to open the menu bar or tray app (tgmcp menubar) and send it again, or call telegram_cancel_send.`
+            ? `A file is only sent with the user's yes in the menu bar or tray app, or in Claude Code's approval dialog; telegram_confirm_send can't approve it. This draft is already waiting, for up to ${this.d.approvals.ttlMs / 60_000} minutes: ask the user to open the menu bar or tray app (tgmcp menubar), where it shows for them to approve. Do not send the file again, or it would go out twice. Call telegram_cancel_send if they want to drop it.`
             : `Show the user this exact message and recipient. Only if they say yes, call telegram_confirm_send with the approval id; otherwise telegram_cancel_send.${firstTime ? ' Approving here saves the chat as "ask every time"; only the user can change that to "always allow", in the menu bar / tray app\'s Contacts page or config.json.' : ''}`,
       ]
         .filter(line => line !== null)
@@ -989,13 +999,19 @@ export class Service {
       return fail(`Not created: creating chats was turned off (chatCreation.enabled) while the ${item.chatLabel} waited.`)
     }
     const paused = this.#pauseRefusal(0, 'every chat', 'Not created')
-    if (paused) return paused
+    if (paused) {
+      this.d.log?.(`create chat refused after approval (paused by a moderator): ${what}`)
+      return paused
+    }
     // An existing discussion group: blocked or paused while the request waited means it isn't touched.
     if (spec.discussion?.kind === 'existing') {
-      const { chatId, label } = spec.discussion
+      const { chatId, username, label } = spec.discussion
       const groupPaused = this.#pauseRefusal(chatId, label, 'Not created')
-      if (groupPaused) return groupPaused
-      const rule = decideSend(this.d.store.get(), { id: chatId, username: null }, { isWatching: false })
+      if (groupPaused) {
+        this.d.log?.(`create chat refused after approval (discussion group ${chatId} paused by a moderator): ${what}`)
+        return groupPaused
+      }
+      const rule = decideSend(this.d.store.get(), { id: chatId, username }, { isWatching: false })
       if (rule.action === 'block') {
         this.d.log?.(`create chat refused after approval (discussion group ${chatId}: ${rule.reason}): ${what}`)
         return fail(`Not created: the discussion group ${label} is blocked now (${rule.reason}), so it won't be linked.`)
@@ -1335,13 +1351,13 @@ export class Service {
       const c = this.d.store.get()
       const name = (ref: ChatRef) => {
         const r = resolveRef(c, ref)
-        if (r.kind === 'entry') return `${r.nickname} (id ${r.entry.id}${r.entry.username ? `, @${r.entry.username}` : ''})`
-        if (r.kind === 'unknown') return `${ref} (not a saved nickname: matches nothing)`
+        if (r.kind === 'entry') return `${fieldName(r.nickname)} (id ${r.entry.id}${r.entry.username ? `, @${r.entry.username}` : ''})`
+        if (r.kind === 'unknown') return `${fieldName(String(ref))} (not a saved nickname: matches nothing)`
         if (r.kind === 'id') {
           const same = Object.entries(c.chats).find(([, e]) => rawId(e.id) === rawId(r.id))
-          if (same) return `${ref} (= ${same[1].name ?? same[0]} [${same[0]}])`
+          if (same) return `${ref} (= ${fieldName(same[1].name ?? same[0])} [${fieldName(same[0])}])`
         }
-        return String(ref)
+        return fieldName(String(ref))
       }
       const out = ['Guides:', ...(c.guides.length ? c.guides.map(g => `- ${g}`) : ['- (none)'])]
       out.push('', `Footer added to every message: ${footerSummary(c)}`)
@@ -1358,14 +1374,14 @@ export class Service {
         const bits = [
           `id ${e.id}`,
           e.username ? `@${e.username}` : null,
-          e.name,
+          e.name ? fieldName(e.name) : null,
           e.type,
           e.topicId ? `topic ${e.topicId}` : null,
-          e.aliases.length ? `aliases: ${e.aliases.join(', ')}` : null,
+          e.aliases.length ? `aliases: ${e.aliases.map(fieldName).join(', ')}` : null,
           policyLabel(c, { id: e.id, username: e.username }),
-          e.notes ? `notes: ${e.notes}` : null,
+          e.notes ? `notes: ${fieldName(e.notes)}` : null,
         ].filter(Boolean)
-        out.push(`  ${nick}: ${bits.join(' · ')}`)
+        out.push(`  ${fieldName(nick)}: ${bits.join(' · ')}`)
       }
       if (this.d.store.error()) out.push('', this.d.store.error()!)
       return { text: out.join('\n') }
@@ -1383,8 +1399,8 @@ export class Service {
       else if (p.sort === 'name') dialogs.sort((a, b) => a.peer.name.localeCompare(b.peer.name, undefined, { sensitivity: 'base' }))
       const line = (d: (typeof dialogs)[number]) => {
         const nick = nicknameFor(c, d.peer.id)
-        const last = d.lastMessage ? ` · last: ${d.lastMessage.outgoing ? 'me: ' : ''}"${clip(d.lastMessage.text || '[media]', 60)}"` : ''
-        return `• ${fmtPeer(d.peer)}${nick ? ` · [${nick}]` : ''}${d.unread ? ` · ${d.unread} unread` : ''} · ${policyLabel(c, d.peer)}${last}`
+        const last = d.lastMessage ? ` · last: ${d.lastMessage.outgoing ? 'me: ' : ''}"${clip(inlineQuote(d.lastMessage.text || '[media]'), 60)}"` : ''
+        return `• ${fmtPeer(d.peer)}${nick ? ` · [${fieldName(nick)}]` : ''}${d.unread ? ` · ${d.unread} unread` : ''} · ${policyLabel(c, d.peer)}${last}`
       }
       if (!p.categorize) return { text: dialogs.map(line).join('\n') }
       const out: string[] = []
@@ -1407,7 +1423,7 @@ export class Service {
         text: found
           .map(f => {
             const nick = nicknameFor(c, f.id)
-            return `• ${fmtPeer(f)}${nick ? ` · saved as "${nick}"` : ''}${f.global ? ' · public result, not in your chats' : ''}`
+            return `• ${fmtPeer(f)}${nick ? ` · saved as "${inlineQuote(nick)}"` : ''}${f.global ? ' · public result, not in your chats' : ''}`
           })
           .join('\n'),
       }
@@ -1511,7 +1527,7 @@ export class Service {
       const t = await this.#resolve(p.chat, false)
       const topics = await this.d.tg.listTopics(t.peer.id)
       const head = `${t.label} · ${fmtPeer(t.peer)} · ${topics.length} topics`
-      return { text: [head, ...(t.warning ? [`Warning: ${t.warning}`] : []), ...topics.map(x => `topic ${x.id} · ${oneLine(x.title)}`)].join('\n') }
+      return { text: [head, ...(t.warning ? [`Warning: ${t.warning}`] : []), ...topics.map(x => `topic ${x.id} · ${fieldName(x.title)}`)].join('\n') }
     },
 
     telegram_create_topic: async (sid, p) => {
@@ -1563,10 +1579,14 @@ export class Service {
       if (!this.uiCanCreate()) {
         return fail('Not created: the menu bar or tray app running is too old to show a new-chat request. Ask the user to update it, then try again.')
       }
-      const waitingHere = this.d.approvals.list().filter(a => a.action === 'create' && a.sessionId === sid).length
-      if (waitingHere >= MAX_WAITING_CREATES) {
-        return fail(`Not created: this session already has ${waitingHere} new chats waiting for the user. Wait for them to decide, or drop one with telegram_cancel_send.`)
+      const tooMany = () => {
+        const waitingHere = this.d.approvals.list().filter(a => a.action === 'create' && a.sessionId === sid).length
+        return waitingHere >= MAX_WAITING_CREATES
+          ? fail(`Not created: this session already has ${waitingHere} new chats waiting for the user. Wait for them to decide, or drop one with telegram_cancel_send.`)
+          : null
       }
+      const full = tooMany()
+      if (full) return full
       const username = p.username?.replace(/^@/, '')
       let discussion: CreateChatSpec['discussion']
       if (p.discussion?.kind === 'new') {
@@ -1585,7 +1605,8 @@ export class Service {
         if (rule.action === 'block') return fail(`Not created: ${g.label} is blocked (${rule.reason}), so it won't be linked.`)
         const groupPaused = this.#pauseRefusal(g.peer.id, g.label, 'Not created')
         if (groupPaused) return groupPaused
-        discussion = { kind: 'existing', chatId: g.peer.id, label: `${g.label} (${fmtPeer(g.peer)})` }
+        // Only the checked title and the id go on the card, not the saved nickname.
+        discussion = { kind: 'existing', chatId: g.peer.id, username: g.peer.username, label: `"${g.peer.name}" (id ${g.peer.id})` }
       }
       const spec: CreateChatSpec = {
         type: p.type,
@@ -1598,6 +1619,9 @@ export class Service {
       const detail = `${spec.type} · ${username ? `public @${username}` : 'private'}`
       const text = describeCreate(spec)
       const reason = 'creating a chat always needs the user\'s yes in the menu bar or tray app'
+      // Counted again: other calls from this session may have added theirs while the group was looked up.
+      const fullNow = tooMany()
+      if (fullNow) return fullNow
       const pending = this.d.approvals.create({
         action: 'create',
         create: spec,
@@ -1710,6 +1734,10 @@ export class Service {
     telegram_save_chat: async (_sid, p) => {
       const problem = validateNickname(p.nickname)
       if (problem) return fail(problem)
+      for (const alias of p.aliases ?? []) {
+        const bad = validateNickname(alias)
+        if (bad) return fail(`Alias "${oneLine(alias)}": ${bad}`)
+      }
       const nick = normalizeNickname(p.nickname)
       const config = this.d.store.get()
 
@@ -1723,7 +1751,7 @@ export class Service {
 
       const existing = config.chats[nick]
       if (existing && existing.id !== peer.id && !p.overwrite) {
-        return fail(`"${nick}" already points to ${existing.name ?? 'a chat'} (id ${existing.id}). Pass overwrite: true to repoint it at ${oneLine(peer.name)}.`)
+        return fail(`"${nick}" already points to ${existing.name ? fieldName(existing.name) : 'a chat'} (id ${existing.id}). Pass overwrite: true to repoint it at ${oneLine(peer.name)}.`)
       }
       // Rules refer to chats by nickname. Letting a session repoint or create a name the rules
       // already use would let it move "autoSend" (or out of "blocked") to a different chat.

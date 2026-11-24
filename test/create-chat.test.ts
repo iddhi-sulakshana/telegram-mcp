@@ -19,7 +19,7 @@ let svc: Service
 let pauses: Pauses
 let logs: string[]
 
-function setup(config: object = { chatCreation: { enabled: true } }) {
+function setup(config: object = { chatCreation: { enabled: true } }, approvals = new Approvals()) {
   const dir = mkdtempSync(join(tmpdir(), 'tgmcp-create-'))
   const path = join(dir, 'config.json')
   writeFileSync(
@@ -46,7 +46,7 @@ function setup(config: object = { chatCreation: { enabled: true } }) {
     tg,
     hub,
     pauses,
-    approvals: new Approvals(),
+    approvals,
     eventsUrl: sid => `ws://x/events?session=${sid}`,
     log: m => logs.push(m),
   })
@@ -325,6 +325,16 @@ describe('telegram_create_chat: approval', () => {
     expect((await svc.call('s2', 'telegram_create_chat', { type: 'supergroup', title: 'E' })).isError).toBeFalsy()
   })
 
+  test('the cap holds for calls made at the same time, even while a group is looked up', async () => {
+    const calls = ['A', 'B', 'C', 'D', 'E'].map(title =>
+      svc.call('s1', 'telegram_create_chat', { type: 'channel', title, discussion: { kind: 'existing', chat: 'qa' } }),
+    )
+    const results = await Promise.all(calls)
+    expect(results.filter(r => !r.isError)).toHaveLength(3)
+    expect(results.filter(r => r.isError).every(r => r.text.includes('3 new chats waiting'))).toBe(true)
+    expect(svc.uiState({ create: true }).approvals).toHaveLength(3)
+  })
+
   test('a /bots stop all placed while it waits: refused on approval', async () => {
     setup({ chatCreation: { enabled: true }, moderation: { enabled: true, moderators: [ANNA.id] } })
     trayOpen()
@@ -333,6 +343,21 @@ describe('telegram_create_chat: approval', () => {
     const res = await tray(r.approval!.id, true)
     expect(res.isError).toBe(true)
     expect(tg.created).toHaveLength(0)
+    expect(logs.some(l => l.startsWith('create chat refused after approval (paused by a moderator)') && l.includes('"News"'))).toBe(true)
+  })
+
+  test('a request nobody decided in time is logged when it expires', async () => {
+    let now = Date.now()
+    const approvals = new Approvals(1000, () => now)
+    setup(undefined, approvals)
+    trayOpen()
+    const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News' })
+    svc.sweepApprovals()
+    expect(logs.some(l => l.startsWith('create chat expired'))).toBe(false)
+    now += 5000
+    svc.sweepApprovals()
+    expect(logs.some(l => l.startsWith('create chat expired') && l.includes('channel "News"'))).toBe(true)
+    expect((await approvals.wait(r.approval!.id)).result.text).toContain('Nothing was created')
   })
 })
 
@@ -362,6 +387,20 @@ describe('telegram_create_chat: the discussion group', () => {
     }
     expect(svc.uiState({ create: true }).approvals).toHaveLength(0)
     expect(logs.some(l => l.startsWith('create chat asked:'))).toBe(false)
+  })
+
+  test('an existing group goes on the card by its checked title and id, without the saved nickname', async () => {
+    // A nickname written by hand into config.json is never checked: it must not reach the card.
+    store.update(c => {
+      c.chats['qa\u202eevil'] = c.chats.qa!
+      delete c.chats.qa
+      c.rules.autoSend = ['qa\u202eevil']
+    })
+    const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'existing', chat: String(TEAM_QA.id) } })
+    expect(r.isError).toBeFalsy()
+    const text = svc.uiState({ create: true }).approvals[0]!.text
+    expect(text).not.toContain('\u202e')
+    expect(text.split('\n')).toContain(`Discussion group: "Team QA" (id ${TEAM_QA.id}), linked to it`)
   })
 
   test('a basic group is refused before anything is asked', async () => {
@@ -401,6 +440,20 @@ describe('telegram_create_chat: the discussion group', () => {
     expect(tg.links).toHaveLength(0)
   })
 
+  test('blocked by @username while it waited: refused on approval, nothing created', async () => {
+    tg.add({ id: -1009903, type: 'group', name: 'Public Group', username: 'group' })
+    const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'existing', chat: '@group' } })
+    expect(r.isError).toBeFalsy()
+    store.update(c => {
+      c.rules.blocked.push('@group')
+    })
+    const res = await tray(r.approval!.id, true)
+    expect(res.isError).toBe(true)
+    expect(res.text).toContain('blocked now')
+    expect(tg.created).toHaveLength(0)
+    expect(tg.links).toHaveLength(0)
+  })
+
   test('paused while it waited: refused on approval, nothing created', async () => {
     setup({ chatCreation: { enabled: true }, moderation: { enabled: true, moderators: [ANNA.id] } })
     trayOpen()
@@ -410,6 +463,7 @@ describe('telegram_create_chat: the discussion group', () => {
     expect(res.isError).toBe(true)
     expect(res.text).toContain('paused')
     expect(tg.created).toHaveLength(0)
+    expect(logs.some(l => l.startsWith(`create chat refused after approval (discussion group ${TEAM_QA.id} paused`))).toBe(true)
   })
 })
 

@@ -60,7 +60,7 @@ const MAX_UPLOAD = 2000 * 1024 * 1024
 const SECRET_DIRS = ['.ssh', '.gnupg', '.aws', '.azure', '.kube', '.docker', '.config/gcloud', '.config/gh', 'Library/Keychains', '.claude']
 /** Base names that are credentials wherever they sit. */
 const SECRET_NAMES =
-  /^(.*\.env(\..*)?|\.envrc|\.netrc|\.npmrc|\.pypirc|\.git-credentials|\.claude\.json(\..*)?|id_(rsa|dsa|ecdsa|ed25519)(_[\w-]+)?(\.pub)?|.*\.(pem|key|p12|pfx|kdbx))$/i
+  /^(.*\.env(\..*)?|\.env.*|\.netrc|\.npmrc|\.pypirc|\.pgpass|\.vault-token|\.dev\.vars|\.git-credentials|\.claude\.json(\..*)?|id_(rsa|dsa|ecdsa|ed25519)(_[\w-]+)?(\.pub)?|.*\.tfvars(\.json)?|.*\.(pem|key|p12|pfx|kdbx))$/i
 
 /**
  * Whether a local file may be sent at all, whatever the chat rules say: an absolute path to a
@@ -79,6 +79,10 @@ export function checkSendable(path: string, o: { mcpHome: string; home?: string;
   // A network share or a device path (two leading slashes) can reach the same files by another name.
   if (/^[\\/]{2}/.test(real)) throw new Error(`Refusing to send ${path}: give a path on a local drive, not a network or device path.`)
   if (!st.isFile()) throw new Error(`Not a regular file: ${path}`)
+  // Another name for the same data can sit in any folder, so where this one is says nothing about it.
+  if (st.nlink > 1) {
+    throw new Error(`Refusing to send ${path}: it is a hard-linked file (one of ${st.nlink} names for the same data), so it can't be told apart from a protected file. Send a copy of it instead.`)
+  }
   if (st.size === 0) throw new Error(`The file is empty: ${path}`)
   if (st.size > MAX_UPLOAD) throw new Error(`The file is ${fmtBytes(st.size)}; Telegram takes at most ${fmtBytes(MAX_UPLOAD)}.`)
   const home = o.home ?? homedir()

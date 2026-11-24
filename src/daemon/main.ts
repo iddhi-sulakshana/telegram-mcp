@@ -188,7 +188,7 @@ export async function createDaemon(o: DaemonOptions) {
 
   const timer = setInterval(() => {
     for (const sid of hub.sweep()) log(`session ${sid} expired, its watches are gone`)
-    approvals.sweep()
+    service.sweepApprovals()
   }, 30_000)
 
   return {

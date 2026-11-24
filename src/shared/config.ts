@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, watch, writeFileSync, 
 import { basename, dirname } from 'node:path'
 import { z } from 'zod'
 import { AwaySchema, DEFAULT_SCHEDULES } from './away'
-import { DEFAULT_FOOTER } from './footer'
+import { BIDI, CONTROL, DEFAULT_FOOTER } from './footer'
+import { fieldName } from './text'
 import { DEFAULT_MODERATORS } from './moderation'
 
 /**
@@ -149,6 +150,9 @@ export function normalizeUsername(name: string): string {
 export function validateNickname(name: string): string | null {
   const n = normalizeNickname(name)
   if (n === '') return 'A nickname cannot be empty.'
+  // Nicknames are shown on approval cards and in results, so none may break or flip the line it's on.
+  if (CONTROL.test(name) || /[\n\u2028\u2029]/.test(name)) return 'A nickname cannot contain control characters or line breaks.'
+  if (BIDI.test(name)) return 'A nickname cannot contain text direction marks.'
   if (n.startsWith('@')) return 'A nickname cannot start with @ (that reads as a username).'
   if (/^-?\d+$/.test(n)) return 'A nickname cannot be only digits (that reads as a chat id).'
   if (['me', 'self', 'saved'].includes(n)) return `"${n}" is reserved for your own Saved Messages.`
@@ -165,8 +169,8 @@ export type Resolved =
   | { kind: 'unknown'; query: string; suggestions: string[] }
 
 function describeEntry(nickname: string, e: ChatEntry): string {
-  const bits = [e.name, e.username ? `@${e.username}` : null].filter(Boolean)
-  return bits.length ? `${nickname} (${bits.join(', ')})` : nickname
+  const bits = [e.name ? fieldName(e.name) : null, e.username ? `@${e.username}` : null].filter(Boolean)
+  return bits.length ? `${fieldName(nickname)} (${bits.join(', ')})` : fieldName(nickname)
 }
 
 /**
