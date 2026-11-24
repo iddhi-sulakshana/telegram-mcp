@@ -1,12 +1,12 @@
 import { describe, expect, test } from 'bun:test'
 import { copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { Approvals } from '../src/daemon/approvals'
 import { Service } from '../src/daemon/service'
 import { SessionHub } from '../src/daemon/sessions'
 import { ConfigStore } from '../src/shared/config'
-import { checkSendable, downloadFileName, fmtBytes, safeFileName } from '../src/shared/media'
+import { checkSendable, downloadFileName, expandHome, fmtBytes, safeFileName } from '../src/shared/media'
 import { ANNA, FakeTelegram, LEO } from './fake-telegram'
 
 describe('file names', () => {
@@ -379,5 +379,120 @@ describe('telegram_send_sticker', () => {
     expect(r.isError).toBe(true)
     expect(r.text).toContain('not a sticker')
     expect(tg.sentStickers).toHaveLength(0)
+  })
+})
+
+describe("checkSendable: the owner's protected folders (files.protectedDirs)", () => {
+  function setup() {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'tgmcp-protect-')))
+    const home = join(dir, 'home')
+    const mcpHome = join(dir, 'mcp')
+    mkdirSync(join(home, 'work', 'clients', 'acme'), { recursive: true })
+    mkdirSync(join(dir, 'vault'), { recursive: true })
+    mkdirSync(mcpHome)
+    const inClients = join(home, 'work', 'clients', 'acme', 'contract.pdf')
+    const inVault = join(dir, 'vault', 'notes.txt')
+    for (const f of [inClients, inVault]) writeFileSync(f, 'x')
+    return { dir, home, mcpHome, inClients, inVault }
+  }
+
+  test('~ means the home folder', () => {
+    expect(expandHome('~', '/h')).toBe('/h')
+    expect(expandHome('~/work/x', '/h')).toBe(join('/h', 'work', 'x'))
+    expect(expandHome('~\\work', '/h')).toBe(join('/h', 'work'))
+  })
+
+  test('refuses files in an absolute folder or one under ~, at any depth', () => {
+    const { dir, home, mcpHome, inClients, inVault } = setup()
+    const protectedDirs = ['~/work/clients', join(dir, 'vault')]
+    expect(() => checkSendable(inClients, { mcpHome, home, protectedDirs })).toThrow('files.protectedDirs')
+    expect(() => checkSendable(inVault, { mcpHome, home, protectedDirs })).toThrow('files.protectedDirs')
+    // A trailing separator or ".." in the setting makes no difference.
+    expect(() => checkSendable(inVault, { mcpHome, home, protectedDirs: [join(dir, 'vault') + sep] })).toThrow('files.protectedDirs')
+    expect(() => checkSendable(inVault, { mcpHome, home, protectedDirs: [join(dir, 'x', '..', 'vault')] })).toThrow('files.protectedDirs')
+    // The home folder itself.
+    expect(() => checkSendable(inClients, { mcpHome, home, protectedDirs: ['~'] })).toThrow('files.protectedDirs')
+  })
+
+  test('files outside them, and folders whose name only starts the same, still pass', () => {
+    const { dir, home, mcpHome } = setup()
+    mkdirSync(join(dir, 'vault-public'))
+    const near = join(dir, 'vault-public', 'ok.txt')
+    const elsewhere = join(home, 'work', 'readme.txt')
+    for (const f of [near, elsewhere]) writeFileSync(f, 'x')
+    const protectedDirs = ['~/work/clients', join(dir, 'vault'), join(dir, 'does-not-exist')]
+    expect(checkSendable(near, { mcpHome, home, protectedDirs }).name).toBe('ok.txt')
+    expect(checkSendable(elsewhere, { mcpHome, home, protectedDirs }).name).toBe('readme.txt')
+    expect(checkSendable(near, { mcpHome, home }).name).toBe('ok.txt')
+  })
+
+  test.skipIf(process.platform === 'win32')('a link into a protected folder, or the folder named by a link, is refused (symlinks need admin on Windows)', () => {
+    const { dir, home, mcpHome, inVault } = setup()
+    const link = join(dir, 'innocent.txt')
+    symlinkSync(inVault, link)
+    expect(() => checkSendable(link, { mcpHome, home, protectedDirs: [join(dir, 'vault')] })).toThrow('files.protectedDirs')
+    // The setting names the folder by a link to it.
+    symlinkSync(join(dir, 'vault'), join(dir, 'vault-link'))
+    expect(() => checkSendable(inVault, { mcpHome, home, protectedDirs: [join(dir, 'vault-link')] })).toThrow('files.protectedDirs')
+  })
+
+  test('letter case is ignored where the file system ignores it, as for the built-in folders', () => {
+    const { home, mcpHome, inClients } = setup()
+    const protectedDirs = ['~/Work/CLIENTS']
+    expect(() => checkSendable(inClients, { mcpHome, home, protectedDirs, ignoreCase: true })).toThrow('files.protectedDirs')
+    if (process.platform === 'linux') expect(checkSendable(inClients, { mcpHome, home, protectedDirs, ignoreCase: false }).name).toBe('contract.pdf')
+  })
+})
+
+describe('telegram_send_file and files.protectedDirs', () => {
+  function setup(protectedDirs: string[]) {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'tgmcp-')))
+    const mcpHome = join(dir, 'mcp')
+    mkdirSync(mcpHome)
+    mkdirSync(join(dir, 'vault'))
+    const path = join(mcpHome, 'config.json')
+    writeFileSync(
+      path,
+      JSON.stringify({
+        chats: { leo: { id: LEO.id, username: 'leo_p', name: LEO.name } },
+        rules: { requireApproval: ['leo'] },
+        files: { protectedDirs: protectedDirs.map(d => d.replace('$DIR', dir)) },
+      }),
+    )
+    const tg = new FakeTelegram().add(LEO, ANNA)
+    const store = new ConfigStore(path)
+    const svc = new Service({ store, tg, hub: new SessionHub(), approvals: new Approvals(), eventsUrl: () => 'ws://x', mcpHome })
+    const secret = join(dir, 'vault', 'plan.pdf')
+    writeFileSync(secret, 'x')
+    return { tg, svc, store, dir, secret, path }
+  }
+
+  test('a file in a protected folder is refused before any approval', async () => {
+    const { tg, svc, secret } = setup([join('$DIR', 'vault')])
+    const r = await svc.call('s1', 'telegram_send_file', { to: 'leo', path: secret })
+    expect(r.isError).toBe(true)
+    expect(r.text).toContain('files.protectedDirs')
+    expect(r.approval).toBeUndefined()
+    expect(tg.sentFiles).toHaveLength(0)
+  })
+
+  test('a folder protected while the draft waits is refused on approval too', async () => {
+    const { tg, svc, store, dir, secret } = setup([])
+    const r = await svc.call('s1', 'telegram_send_file', { to: 'leo', path: secret })
+    expect(r.approval).toBeDefined()
+    store.update(c => {
+      c.files.protectedDirs = [join(dir, 'vault')]
+    })
+    const res = await svc.decide(r.approval!.id, true, 'menubar', null)
+    expect(res.isError).toBe(true)
+    expect(res.text).toContain('files.protectedDirs')
+    expect(tg.sentFiles).toHaveLength(0)
+  })
+
+  test('no tool changes it: saving a chat keeps the setting as the owner wrote it', async () => {
+    const { svc, path } = setup(['~/work/clients', join('$DIR', 'vault')])
+    const before = JSON.parse(readFileSync(path, 'utf8')).files
+    expect((await svc.call('s1', 'telegram_save_chat', { nickname: 'anna', chat: ANNA.id })).isError).toBeFalsy()
+    expect(JSON.parse(readFileSync(path, 'utf8')).files).toEqual(before)
   })
 })

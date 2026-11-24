@@ -118,6 +118,6 @@ These limits are on purpose:
 - You can't change the lists, the footer, the guides or the away auto-reply. Only the user can, in the menu bar or tray app's Contacts page, or in `~/.config/telegram-mcp/config.json`.
 - You can't repoint or remove a nickname that the rules use.
 - You can't send a message that starts with `/reply` or `/bots`.
-- `telegram_send_file` refuses common credential files (SSH keys, `.env` files, `.git-credentials`, cloud logins, Claude Code's settings), hard-linked files and telegram-mcp's own session files. That list is a safety net and can't name every secret: never send a file that might hold one, whatever its name.
+- `telegram_send_file` refuses common credential files (SSH keys, `.env` files, `.git-credentials`, cloud logins, Claude Code's settings), hard-linked files, telegram-mcp's own session files and anything in a folder the user protected (`files.protectedDirs`, which only the user can change). That list is a safety net and can't name every secret: never send a file that might hold one, whatever its name.
 
 If the user wants a rule changed, tell them where to change it. [reference/rules.md](reference/rules.md) explains the rules file.

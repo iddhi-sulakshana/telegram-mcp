@@ -193,6 +193,11 @@ export class Service {
     return this.d.mcpHome ?? join(homedir(), '.config', 'telegram-mcp')
   }
 
+  /** What checkSendable needs, with the owner's protected folders as config.json says now. */
+  #sendable() {
+    return { mcpHome: this.#mcpHome, protectedDirs: this.d.store.get().files.protectedDirs }
+  }
+
   constructor(private readonly d: ServiceDeps) {
     if (d.recentPath) {
       try {
@@ -514,7 +519,7 @@ export class Service {
       } else {
         try {
           // The file may have changed or moved while it waited.
-          const file = item.file ? checkSendable(item.file.path, { mcpHome: this.#mcpHome }) : undefined
+          const file = item.file ? checkSendable(item.file.path, this.#sendable()) : undefined
           if (file && item.fileDigest && (await fileDigest(file.path)) !== item.fileDigest) {
             throw new Error(`${file.path} changed after approval was asked, so it was not sent. Ask again to send the current version.`)
           }
@@ -785,7 +790,7 @@ export class Service {
   ): Promise<ToolResult> {
     const config = this.d.store.get()
     const t = await this.#resolve(p.to, true)
-    const file = draft.file ? checkSendable(draft.file, { mcpHome: this.#mcpHome }) : undefined
+    const file = draft.file ? checkSendable(draft.file, this.#sendable()) : undefined
     const topicId = p.topicId ?? t.entry?.topicId
     if (looksLikeReplyCommand(visibleText(draft.text, p.parseMode))) return fail('Not sent: a message starting with /reply would start a takeover. Reword it.')
     if (looksLikeBotsCommand(visibleText(draft.text, p.parseMode))) return fail('Not sent: a message starting with /bots is a moderator command, which only a person types. Reword it.')

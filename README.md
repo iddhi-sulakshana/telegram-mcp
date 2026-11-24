@@ -127,6 +127,14 @@ Downloads go to `~/Downloads/telegram-mcp/<chat>/` (`TELEGRAM_MCP_DOWNLOADS`), n
 
 As a safety net, the send check also refuses common credential files (SSH keys, `.env` files, `.git-credentials`, cloud logins, `~/.claude`), a file with more than one hard link, and this tool's own files. That list can't name every secret on your machine: what protects you is the approval, so read the path on the card before you send.
 
+**Your own protected folders.** Add folders whose files are never sent under `files.protectedDirs` in `config.json`, each absolute or starting with `~`:
+
+```json
+"files": { "protectedDirs": ["~/work/clients", "/srv/backups"] }
+```
+
+A file anywhere inside one is refused like a file in `~/.ssh`, before any approval and again when you approve: links are resolved first (a link to the folder, or to a file in it, counts), and on Windows and macOS the letter case doesn't matter. Only you set it, by editing `config.json`; no tool can change it, and the daemon picks up an edit at once. A relative path or one like `~bob/x` makes the config invalid, and the daemon keeps the last good one.
+
 **First message to a new chat.** A chat that is on neither `autoSend` nor `requireApproval` always needs approval. The approval also asks what should happen next time:
 - **Always allow** puts it on `autoSend`.
 - **Ask every time** puts it on `requireApproval`.

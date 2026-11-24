@@ -1,6 +1,6 @@
 import { realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, isAbsolute, join, sep } from 'node:path'
+import { basename, isAbsolute, join, resolve, sep } from 'node:path'
 
 /** Naming and sizes for files moving between Telegram and disk. */
 
@@ -62,12 +62,23 @@ const SECRET_DIRS = ['.ssh', '.gnupg', '.aws', '.azure', '.kube', '.docker', '.c
 const SECRET_NAMES =
   /^(.*\.env(\..*)?|\.env.*|\.netrc|\.npmrc|\.pypirc|\.pgpass|\.vault-token|\.dev\.vars|\.git-credentials|\.claude\.json(\..*)?|id_(rsa|dsa|ecdsa|ed25519)(_[\w-]+)?(\.pub)?|.*\.tfvars(\.json)?|.*\.(pem|key|p12|pfx|kdbx))$/i
 
+/** A `files.protectedDirs` entry as a path: "~" is the home folder, "~/x" (or "~\\x") under it. */
+export function expandHome(dir: string, home: string): string {
+  if (dir === '~') return home
+  if (/^~[\\/]/.test(dir)) return join(home, dir.slice(2))
+  return resolve(dir)
+}
+
 /**
  * Whether a local file may be sent at all, whatever the chat rules say: an absolute path to a
  * regular, non-empty file under Telegram's size limit, and not a credential. `mcpHome` is this
- * tool's own folder (login session, API token), which is never sent.
+ * tool's own folder (login session, API token), which is never sent. `protectedDirs` are the
+ * owner's own extra folders (config `files.protectedDirs`), refused like the built-in ones.
  */
-export function checkSendable(path: string, o: { mcpHome: string; home?: string; ignoreCase?: boolean }): OutgoingFile {
+export function checkSendable(
+  path: string,
+  o: { mcpHome: string; home?: string; ignoreCase?: boolean; protectedDirs?: readonly string[] },
+): OutgoingFile {
   if (!isAbsolute(path)) throw new Error(`Give an absolute path, not "${path}".`)
   let real: string
   try {
@@ -102,6 +113,10 @@ export function checkSendable(path: string, o: { mcpHome: string; home?: string;
   const guarded = [realOr(o.mcpHome), ...SECRET_DIRS.map(d => realOr(join(home, d)))]
   if (guarded.some(inside) || SECRET_NAMES.test(basename(real))) {
     throw new Error(`Refusing to send ${path}: it looks like a credential or this tool's own login files.`)
+  }
+  // Resolved the same way as the file, so a link to the folder, or the folder by a link, is no way round it.
+  if ((o.protectedDirs ?? []).some(d => inside(realOr(expandHome(d, home))))) {
+    throw new Error(`Refusing to send ${path}: it is in a folder the user protected (files.protectedDirs in config.json).`)
   }
   return { path: real, name: basename(real), size: st.size }
 }

@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, watch, writeFileSync, type FSWatcher } from 'node:fs'
-import { basename, dirname } from 'node:path'
+import { basename, dirname, isAbsolute } from 'node:path'
 import { z } from 'zod'
 import { AwaySchema, DEFAULT_SCHEDULES } from './away'
 import { BIDI, CONTROL, DEFAULT_FOOTER } from './footer'
@@ -10,7 +10,8 @@ import { DEFAULT_MODERATORS } from './moderation'
  * The rules file. Humans edit it by hand; Claude sessions can only change `chats`
  * (through the daemon), never `rules`, `footer` or `guides`. `away` (the away auto-reply schedules)
  * and `moderation` (moderator commands) are changed only by hand, by the CLI or by the tray, never by a session.
- * The same goes for `chatCreation` (whether sessions may ask to create channels and supergroups).
+ * The same goes for `chatCreation` (whether sessions may ask to create channels and supergroups) and
+ * `files` (extra folders whose files are never sent).
  */
 
 const ChatRefSchema = z.union([z.string().min(1), z.number().int()])
@@ -91,6 +92,31 @@ const ChatCreationSchema = z.looseObject({
 })
 export type ChatCreationConfig = z.infer<typeof ChatCreationSchema>
 
+/** "~", "~/x" or "~\\x" (the home folder and what is under it), or an absolute path. */
+function isProtectedDir(p: string): boolean {
+  return p === '~' || /^~[\\/]/.test(p) || isAbsolute(p)
+}
+
+/** Local files a session may ask to send (telegram_send_file). */
+const FilesSchema = z.looseObject({
+  /**
+   * Folders whose files are never sent, on top of the built-in credential folders (~/.ssh and the
+   * like): absolute, or starting with ~. Matched after resolving links, and whatever the letter case
+   * on Windows and macOS. Only the owner sets it, by hand; no tool changes it.
+   */
+  protectedDirs: z
+    .array(
+      z
+        .string()
+        .trim()
+        .min(1)
+        .refine(p => !CONTROL.test(p) && !/[\n\r\u2028\u2029]/.test(p), 'a folder cannot contain control characters or line breaks')
+        .refine(isProtectedDir, 'give an absolute folder, or one starting with ~ (like "~/work/secrets")'),
+    )
+    .default([]),
+})
+export type FilesConfig = z.infer<typeof FilesSchema>
+
 export const ConfigSchema = z.looseObject({
   guides: z.array(z.string()).default([]),
   footer: z.string().default(''),
@@ -104,6 +130,7 @@ export const ConfigSchema = z.looseObject({
   away: AwaySchema.prefault({}),
   moderation: ModerationSchema.prefault({}),
   chatCreation: ChatCreationSchema.prefault({}),
+  files: FilesSchema.prefault({}),
 })
 export type Config = z.infer<typeof ConfigSchema>
 export type RuleList = 'blocked' | 'requireApproval' | 'autoSend' | 'autoReply'

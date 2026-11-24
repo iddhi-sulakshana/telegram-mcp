@@ -136,6 +136,38 @@ describe('chatCreation', () => {
   })
 })
 
+describe('files.protectedDirs', () => {
+  test('empty unless set, in a new config; the example parses', () => {
+    expect(parseConfig('{}').files).toEqual({ protectedDirs: [] })
+    const example = parseConfig(readFileSync(join(import.meta.dir, '../config.example.json'), 'utf8'))
+    expect(example.files.protectedDirs).toEqual(['~/work/clients', '/srv/backups'])
+  })
+
+  test('takes absolute folders and ones starting with ~, trimmed', () => {
+    const abs = process.platform === 'win32' ? 'C:\\secrets' : '/srv/secrets'
+    const dirs = ['~', '~/work/clients', '~\\notes', abs, ` ${abs} `]
+    expect(parseConfig(JSON.stringify({ files: { protectedDirs: dirs } })).files.protectedDirs).toEqual(['~', '~/work/clients', '~\\notes', abs, abs])
+  })
+
+  test('refuses relative folders, ~user, empty entries, control characters and the wrong type', () => {
+    for (const bad of ['work/secrets', './x', '~bob/x', '', '   ', '/srv/a\nb', '/srv/a\u0007', 5, null]) {
+      expect(() => parseConfig(JSON.stringify({ files: { protectedDirs: [bad] } }))).toThrow()
+    }
+    expect(() => parseConfig(JSON.stringify({ files: { protectedDirs: '/srv/x' } }))).toThrow()
+  })
+
+  test('a broken protectedDirs keeps the last good config', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tgmcp-'))
+    const path = join(dir, 'config.json')
+    writeFileSync(path, JSON.stringify({ files: { protectedDirs: ['~/a'] } }))
+    const store = new ConfigStore(path)
+    writeFileSync(path, JSON.stringify({ files: { protectedDirs: ['relative'] } }))
+    store.reload()
+    expect(store.error()).toContain('config.json is invalid')
+    expect(store.get().files.protectedDirs).toEqual(['~/a'])
+  })
+})
+
 describe('USERNAME_RE', () => {
   test('Telegram\'s username rules', () => {
     for (const ok of ['acme_support', '@acme_support', 'Abcde', 'a1234', 'a_b_c_d']) expect(USERNAME_RE.test(ok)).toBe(true)
