@@ -108,10 +108,14 @@ describe('telegram_send_file', () => {
     return { tg, svc, dir, mcpHome, report, store }
   }
 
-  test('an autoSend chat gets the file at once, with the footer as caption', async () => {
+  test('an autoSend chat still asks for a file; once approved it goes with the footer as caption', async () => {
     const { tg, svc, report } = setup()
     const r = await svc.call('s1', 'telegram_send_file', { to: 'leo', path: report, caption: 'Q3 numbers' })
     expect(r.isError).toBeFalsy()
+    expect(r.approval).toBeDefined()
+    expect(r.text).toContain('files always need approval')
+    expect(tg.sentFiles).toHaveLength(0)
+    expect((await svc.call('s1', '__decide', { approvalId: r.approval!.id, approve: true })).isError).toBeFalsy()
     expect(tg.sentFiles).toHaveLength(1)
     expect(tg.sentFiles[0]!.file).toEqual({ path: realpathSync(report), name: 'report.pdf', size: 14 })
     expect(tg.sentFiles[0]!.caption).toBe(`Q3 numbers${FOOTER}`)
@@ -126,7 +130,8 @@ describe('telegram_send_file', () => {
 
   test('no caption still gets the footer, without leading blank lines', async () => {
     const { tg, svc, report } = setup()
-    await svc.call('s1', 'telegram_send_file', { to: 'leo', path: report })
+    const r = await svc.call('s1', 'telegram_send_file', { to: 'leo', path: report })
+    await svc.call('s1', '__decide', { approvalId: r.approval!.id, approve: true })
     expect(tg.sentFiles[0]!.caption).toBe(FOOTER.trim())
   })
 
@@ -137,13 +142,13 @@ describe('telegram_send_file', () => {
     expect(r.approval!.text).toContain('[file: report.pdf, 14 B]')
     expect(tg.sentFiles).toHaveLength(0)
     expect(svc.uiState().approvals[0]!.text).toContain('[file: report.pdf')
-    const ok = await svc.call('s1', 'telegram_confirm_send', { approvalId: r.approval!.id })
+    const ok = await svc.call('s1', '__decide', { approvalId: r.approval!.id, approve: true })
     expect(ok.isError).toBeFalsy()
     expect(tg.sentFiles).toHaveLength(1)
     expect(svc.uiState().recent.at(-1)!.text).toContain('[file: report.pdf')
   })
 
-  test('a file to a chat the session watches asks first, even on autoSend; text still goes', async () => {
+  test('a file to a chat the session watches asks first, like every file; text still goes', async () => {
     const { tg, svc, report, store } = setup()
     store.update(c => {
       c.rules.autoReply = ['leo']
@@ -152,22 +157,36 @@ describe('telegram_send_file', () => {
     expect(w.isError).toBeFalsy()
     const f = await svc.call('s1', 'telegram_send_file', { to: 'leo', path: report })
     expect(f.approval).toBeDefined()
-    expect(f.text).toContain('chat this session is watching')
+    expect(f.text).toContain('files always need approval')
     expect(tg.sentFiles).toHaveLength(0)
     const t = await svc.call('s1', 'telegram_send_message', { to: 'leo', text: 'on it' })
     expect(t.isError).toBeFalsy()
     expect(tg.sent).toHaveLength(1)
-    // Another session that isn't watching sends the file to the same autoSend chat at once.
+    // Another session that isn't watching asks too: a file never goes without a yes.
     const other = await svc.call('s2', 'telegram_send_file', { to: 'leo', path: report })
-    expect(other.approval).toBeUndefined()
-    expect(tg.sentFiles).toHaveLength(1)
+    expect(other.approval).toBeDefined()
+    expect(tg.sentFiles).toHaveLength(0)
+  })
+
+  test("a file is never approved on the model's word in chat; the draft keeps waiting", async () => {
+    const { tg, svc, report } = setup()
+    for (const to of ['leo', 'anna']) {
+      const r = await svc.call('s1', 'telegram_send_file', { to, path: report })
+      expect(r.text).toContain("telegram_confirm_send can't approve it")
+      const chat = await svc.call('s1', 'telegram_confirm_send', { approvalId: r.approval!.id })
+      expect(chat.isError).toBe(true)
+      expect(chat.text).toContain('never in chat')
+      expect(svc.uiState().approvals.map(a => a.id)).toContain(r.approval!.id)
+      expect((await svc.call('s1', 'telegram_cancel_send', { approvalId: r.approval!.id })).isError).toBeFalsy()
+    }
+    expect(tg.sentFiles).toHaveLength(0)
   })
 
   test('a file replaced while waiting for approval is not sent', async () => {
     const { tg, svc, report } = setup()
     const r = await svc.call('s1', 'telegram_send_file', { to: 'anna', path: report })
     writeFileSync(report, 'something else entirely, not what the user approved')
-    const res = await svc.call('s1', 'telegram_confirm_send', { approvalId: r.approval!.id })
+    const res = await svc.call('s1', '__decide', { approvalId: r.approval!.id, approve: true })
     expect(res.isError).toBe(true)
     expect(res.text).toContain('changed after approval was asked')
     expect(tg.sentFiles).toHaveLength(0)
@@ -185,7 +204,7 @@ describe('telegram_send_file', () => {
     const { tg, svc, report } = setup()
     const r = await svc.call('s1', 'telegram_send_file', { to: 'anna', path: report })
     rmSync(report)
-    const res = await svc.call('s1', 'telegram_confirm_send', { approvalId: r.approval!.id })
+    const res = await svc.call('s1', '__decide', { approvalId: r.approval!.id, approve: true })
     expect(res.isError).toBe(true)
     expect(tg.sentFiles).toHaveLength(0)
   })
@@ -210,6 +229,69 @@ describe('telegram_send_file', () => {
     expect((await svc.call('s1', 'telegram_send_file', { to: 'leo', path: dir })).text).toContain('Not a regular file')
     expect((await svc.call('s1', 'telegram_send_file', { to: 'leo', path: join(dir, 'nope') })).text).toContain('No such file')
     expect(tg.sentFiles).toHaveLength(0)
+  })
+})
+
+describe('checkSendable: more credential files', () => {
+  function setup() {
+    const dir = mkdtempSync(join(tmpdir(), 'tgmcp-deny-'))
+    const home = join(dir, 'home')
+    const mcpHome = join(dir, 'mcp')
+    mkdirSync(mcpHome, { recursive: true })
+    mkdirSync(join(home, '.claude', 'projects'), { recursive: true })
+    return { dir, home, mcpHome }
+  }
+
+  test('refuses .env files by any name, git credentials and the Claude Code config', () => {
+    const { dir, home, mcpHome } = setup()
+    const refused = [
+      join(dir, 'prod.env'),
+      join(dir, 'prod.env.local'),
+      join(dir, '.envrc'),
+      join(dir, 'local.ENV'),
+      join(dir, '.git-credentials'),
+      join(home, '.claude', 'settings.json'),
+      join(home, '.claude', 'projects', 'notes.md'),
+      join(home, '.claude.json'),
+      join(dir, '.claude.json.backup'),
+    ]
+    for (const path of refused) {
+      writeFileSync(path, 'x')
+      expect(() => checkSendable(path, { mcpHome, home })).toThrow('Refusing')
+    }
+  })
+
+  test('ordinary files still pass, including ones that only look alike', () => {
+    const { dir, home, mcpHome } = setup()
+    for (const name of ['environment.txt', 'envoy.pdf', 'claude.json', 'git-credentials.md']) {
+      const path = join(dir, name)
+      writeFileSync(path, 'x')
+      expect(checkSendable(path, { mcpHome, home }).name).toBe(name)
+    }
+  })
+
+  // Windows reaches one file by several names: a device path, an admin share, a folder's stream name.
+  test.skipIf(process.platform !== 'win32')('on Windows, other names for a protected file are refused too', () => {
+    const { home, mcpHome } = setup()
+    const path = join(home, '.claude', 'settings.json')
+    writeFileSync(path, 'x')
+    const bs = String.fromCharCode(92)
+    const drive = path.slice(0, 1)
+    const names = [
+      `${bs}${bs}?${bs}${path}`,
+      `${bs}${bs}.${bs}${path}`,
+      `${bs}${bs}localhost${bs}${drive}$${path.slice(2)}`,
+      join(home, '.claude::$INDEX_ALLOCATION', 'settings.json'),
+    ]
+    for (const name of names) expect(() => checkSendable(name, { mcpHome, home })).toThrow()
+  })
+
+  test('on a file system that ignores case, a differently cased secret folder is still refused', () => {
+    const { home, mcpHome } = setup()
+    mkdirSync(join(home, '.SSH'), { recursive: true })
+    const path = join(home, '.SSH', 'config')
+    writeFileSync(path, 'Host x')
+    expect(() => checkSendable(path, { mcpHome, home, ignoreCase: true })).toThrow('Refusing')
   })
 })
 
