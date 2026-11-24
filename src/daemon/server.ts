@@ -240,6 +240,7 @@ export function startServer(o: ServerOptions) {
           menubar: o.service.uiActive(),
           sessions: o.hub.summary(),
           moderation: o.service.moderationState(),
+          files: { protectedDirWarnings: o.service.protectedDirWarnings() },
         })
       }
       if (url.pathname === '/admin/reconnect' && req.method === 'POST') {

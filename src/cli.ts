@@ -232,7 +232,8 @@ async function status() {
     pid: number
     startedAt: string
     telegram: { phase: string; me: { name: string; username: string | null; id: number } | null; reconnects: number; lastError: string | null; since: number }
-    config: { path: string; error: string | null }
+    config: { path: string; error: string | null; writesRefused?: boolean }
+    files?: { protectedDirWarnings: string[] }
     secrets?: { kind: string; where: string }
     menubar: boolean
     sessions: { id: string; label: string; connected: boolean; channel: boolean; monitors: number; watches: number; pending: number }[]
@@ -265,6 +266,11 @@ async function status() {
     `telegram: ${t.phase}${t.me ? ` as ${t.me.name}${t.me.username ? ` (@${t.me.username})` : ''}` : ''}, ${t.reconnects} reconnects${t.lastError && t.phase !== 'connected' ? `\n  last error: ${t.lastError}` : ''}`,
   )
   console.log(`config: ${body.config.path}${body.config.error ? `\n  ${body.config.error}` : ''}`)
+  if (body.config.writesRefused) {
+    console.log('  writes: REFUSED until config.json is valid (nothing is sent, edited, deleted or created)')
+    process.exitCode = 1
+  }
+  for (const w of body.files?.protectedDirWarnings ?? []) console.log(`  files.protectedDirs warning: ${w}`)
   if (body.secrets && body.secrets.kind !== openSecretStore(paths).kind) {
     console.log(`  the daemon keeps its secrets in ${body.secrets.where}: restart it (tgmcp install) so both agree`)
   }

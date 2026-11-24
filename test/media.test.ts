@@ -1,12 +1,12 @@
 import { describe, expect, test } from 'bun:test'
 import { copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, sep } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { Approvals } from '../src/daemon/approvals'
 import { Service } from '../src/daemon/service'
 import { SessionHub } from '../src/daemon/sessions'
 import { ConfigStore } from '../src/shared/config'
-import { checkSendable, downloadFileName, expandHome, fmtBytes, safeFileName } from '../src/shared/media'
+import { checkSendable, downloadFileName, expandHome, fmtBytes, normalizeProtectedDir, protectedDirWarnings, realFolder, safeFileName } from '../src/shared/media'
 import { ANNA, FakeTelegram, LEO } from './fake-telegram'
 
 describe('file names', () => {
@@ -506,5 +506,84 @@ describe('telegram_send_file and files.protectedDirs', () => {
     const before = JSON.parse(readFileSync(path, 'utf8')).files
     expect((await svc.call('s1', 'telegram_save_chat', { nickname: 'anna', chat: ANNA.id })).isError).toBeFalsy()
     expect(JSON.parse(readFileSync(path, 'utf8')).files).toEqual(before)
+  })
+})
+
+describe('protectedDirs entries that need normalising, or don\'t exist yet', () => {
+  function setup() {
+    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'tgmcp-norm-')))
+    const home = join(dir, 'home')
+    const mcpHome = join(dir, 'mcp')
+    mkdirSync(home, { recursive: true })
+    mkdirSync(mcpHome)
+    return { dir, home, mcpHome }
+  }
+
+  test('trailing separators, "." and ".." are resolved; on Windows trailing dots and spaces are dropped from every part', () => {
+    expect(normalizeProtectedDir('/srv/x/', '/h', 'linux')).toBe(resolve('/srv/x'))
+    expect(normalizeProtectedDir('/srv/./y/../x//', '/h', 'linux')).toBe(resolve('/srv/x'))
+    expect(normalizeProtectedDir('~/work/', '/h', 'linux')).toBe(resolve('/h', 'work'))
+    // Outside Windows a trailing dot names another folder, so it is kept (and warned about).
+    expect(normalizeProtectedDir('/srv/x.', '/h', 'linux')).toBe(resolve('/srv/x.'))
+    expect(normalizeProtectedDir('/srv/Secrets. /x.. ', '/h', 'win32')).toBe(resolve('/srv/Secrets/x'))
+    expect(normalizeProtectedDir('~/Work. ', '/h', 'win32')).toBe(resolve(join('/h', 'Work')))
+  })
+
+  test('a folder that does not exist yet is protected as soon as it is made', () => {
+    const { dir, home, mcpHome } = setup()
+    const later = join(dir, 'later', 'deeper')
+    const protectedDirs = [later]
+    expect(realFolder(later)).toBe(later)
+    mkdirSync(later, { recursive: true })
+    const file = join(later, 'plan.txt')
+    writeFileSync(file, 'x')
+    expect(() => checkSendable(file, { mcpHome, home, protectedDirs })).toThrow('files.protectedDirs')
+  })
+
+  test.skipIf(process.platform === 'win32')('a missing folder under a linked parent is matched by its real path (symlinks need admin on Windows)', () => {
+    const { dir, home, mcpHome } = setup()
+    mkdirSync(join(dir, 'real'))
+    symlinkSync(join(dir, 'real'), join(dir, 'via'))
+    // Named through the link, before it exists.
+    const named = join(dir, 'via', 'vault')
+    expect(realFolder(named)).toBe(join(dir, 'real', 'vault'))
+    mkdirSync(join(dir, 'real', 'vault'))
+    writeFileSync(join(dir, 'real', 'vault', 'a.txt'), 'x')
+    expect(() => checkSendable(join(dir, 'real', 'vault', 'a.txt'), { mcpHome, home, protectedDirs: [named] })).toThrow('files.protectedDirs')
+  })
+
+  test.skipIf(process.platform !== 'win32')('on Windows a trailing dot or space in the entry still protects the folder', () => {
+    const { dir, home, mcpHome } = setup()
+    mkdirSync(join(dir, 'vault'))
+    writeFileSync(join(dir, 'vault', 'a.txt'), 'x')
+    for (const entry of [`${join(dir, 'vault')}.`, `${join(dir, 'vault')} `, `${join(dir, 'vault')}.\\`]) {
+      expect(() => checkSendable(join(dir, 'vault', 'a.txt'), { mcpHome, home, protectedDirs: [entry] })).toThrow('files.protectedDirs')
+    }
+  })
+
+  test('warnings: a missing folder, a file, a trailing dot, an entry read differently; none for a plain folder', () => {
+    const { dir, home } = setup()
+    mkdirSync(join(dir, 'ok'))
+    writeFileSync(join(dir, 'a-file'), 'x')
+    expect(protectedDirWarnings([join(dir, 'ok'), `${join(dir, 'ok')}${sep}`], home, 'linux')).toEqual([])
+    const missing = protectedDirWarnings([join(dir, 'nope')], home, 'linux')
+    expect(missing).toHaveLength(1)
+    expect(missing[0]).toContain('does not exist yet')
+    expect(protectedDirWarnings([join(dir, 'a-file')], home, 'linux')[0]).toContain('is a file')
+    expect(protectedDirWarnings([`${join(dir, 'ok')}.`], home, 'linux')[0]).toContain('ends in a dot or space')
+    const win = protectedDirWarnings([`${join(dir, 'ok')}.`], home, 'win32')
+    expect(win[0]).toContain('is read as')
+  })
+
+  test('telegram_status lists the warnings', async () => {
+    const { dir, mcpHome } = setup()
+    const path = join(mcpHome, 'config.json')
+    writeFileSync(path, JSON.stringify({ files: { protectedDirs: [join(dir, 'nope')] } }))
+    const svc = new Service({ store: new ConfigStore(path), tg: new FakeTelegram(), hub: new SessionHub(), approvals: new Approvals(), eventsUrl: () => 'ws://x', mcpHome })
+    const status = (await svc.call('s1', 'telegram_status', {})).text
+    expect(status).toContain('Protected folders (files.protectedDirs): 1, with warnings:')
+    expect(status).toContain('warning: ')
+    expect(status).toContain('does not exist yet')
+    expect(svc.protectedDirWarnings()).toHaveLength(1)
   })
 })

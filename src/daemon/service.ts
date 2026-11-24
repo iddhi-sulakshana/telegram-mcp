@@ -22,7 +22,7 @@ import { decideSend, policyLabel, withFooter, withoutFooter } from '../shared/po
 import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { checkSendable, describeOutgoing, fileDigest, fmtBytes, safeFileName, type OutgoingFile } from '../shared/media'
+import { checkSendable, describeOutgoing, fileDigest, fmtBytes, protectedDirWarnings, safeFileName, type OutgoingFile } from '../shared/media'
 import { looksLikeReplyCommand, parseReplyCommand } from '../shared/takeover'
 import { fmtMinutes, looksLikeBotsCommand, moderatorCommand, parseBotsCommand, stopMinutes } from '../shared/moderation'
 import type { IncomingMessage, MessageInfo, PeerInfo, SendMode, SentRecord, TgEvent, ToolResult, UiContact, UiModeration, UiPage, UiState } from '../shared/protocol'
@@ -203,6 +203,11 @@ export class Service {
 
   get #mcpHome(): string {
     return this.d.mcpHome ?? join(homedir(), '.config', 'telegram-mcp')
+  }
+
+  /** files.protectedDirs entries worth a look (missing, a file, read differently): /status and telegram_status. */
+  protectedDirWarnings(): string[] {
+    return protectedDirWarnings(this.d.store.get().files.protectedDirs)
   }
 
   /** What checkSendable needs, with the owner's protected folders as config.json says now. */
@@ -1383,6 +1388,12 @@ export class Service {
       ]
       if (st.lastError && st.phase !== 'connected') lines.push(`Last error: ${st.lastError}`)
       lines.push(`Config: ${store.path}${store.error() ? `\n  ${store.error()}` : ''}`)
+      const dirs = store.get().files.protectedDirs
+      if (dirs.length) {
+        const warnings = this.protectedDirWarnings()
+        lines.push(`Protected folders (files.protectedDirs): ${dirs.length}${warnings.length ? `, with warnings:` : ''}`)
+        for (const w of warnings) lines.push(`  warning: ${w}`)
+      }
       if (store.writesRefused()) lines.push('Writes: REFUSED (no valid config.json since the daemon started). Reading still works; fix config.json and it reloads by itself.')
       const watches = hub.watches(sid)
       lines.push(`This session: ${sid}`)

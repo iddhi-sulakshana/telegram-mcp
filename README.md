@@ -133,7 +133,7 @@ As a safety net, the send check also refuses common credential files (SSH keys, 
 "files": { "protectedDirs": ["~/work/clients", "/srv/backups"] }
 ```
 
-A file anywhere inside one is refused like a file in `~/.ssh`, before any approval and again when you approve: links are resolved first (a link to the folder, or to a file in it, counts), and on Windows and macOS the letter case doesn't matter. Only you set it, by editing `config.json`; no tool can change it, and the daemon picks up an edit at once. A relative path or one like `~bob/x` makes the config invalid, and the daemon keeps the last good one.
+A file anywhere inside one is refused like a file in `~/.ssh`, before any approval and again when you approve: links are resolved first (a link to the folder, or to a file in it, counts), and on Windows and macOS the letter case doesn't matter. A trailing separator makes no difference, and on Windows neither do trailing dots or spaces (Windows ignores them too). A folder that doesn't exist yet is protected by its path from the moment it is made. `tgmcp status`, `telegram_status` and `/status` warn about an entry that doesn't exist, names a file, or ends in a dot or space outside Windows. Only you set it, by editing `config.json`; no tool can change it, and the daemon picks up an edit at once. A relative path or one like `~bob/x` makes the config invalid, and the daemon keeps the last good one.
 
 **First message to a new chat.** A chat that is on neither `autoSend` nor `requireApproval` always needs approval. The approval also asks what should happen next time:
 - **Always allow** puts it on `autoSend`.
