@@ -415,6 +415,20 @@ describe('telegram_create_chat: the discussion group', () => {
     expect(tg.links).toHaveLength(0)
   })
 
+  test('blocked by @username while it waited: refused on approval, nothing created', async () => {
+    tg.add({ id: -1009903, type: 'group', name: 'Public Group', username: 'group' })
+    const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'existing', chat: '@group' } })
+    expect(r.isError).toBeFalsy()
+    store.update(c => {
+      c.rules.blocked.push('@group')
+    })
+    const res = await tray(r.approval!.id, true)
+    expect(res.isError).toBe(true)
+    expect(res.text).toContain('blocked now')
+    expect(tg.created).toHaveLength(0)
+    expect(tg.links).toHaveLength(0)
+  })
+
   test('paused while it waited: refused on approval, nothing created', async () => {
     setup({ chatCreation: { enabled: true }, moderation: { enabled: true, moderators: [ANNA.id] } })
     trayOpen()

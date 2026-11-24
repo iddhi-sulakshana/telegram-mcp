@@ -9,8 +9,11 @@ export interface CreateChatSpec {
   title: string
   description?: string
   username?: string
-  /** A channel's discussion group: a new supergroup with this title, or an existing one. */
-  discussion?: { kind: 'new'; title: string } | { kind: 'existing'; chatId: number; label: string }
+  /**
+   * A channel's discussion group: a new supergroup with this title, or an existing one (its username
+   * too, so a block by @username placed while the request waits still applies).
+   */
+  discussion?: { kind: 'new'; title: string } | { kind: 'existing'; chatId: number; username: string | null; label: string }
 }
 
 export interface PendingSend {

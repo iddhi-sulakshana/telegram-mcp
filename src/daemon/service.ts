@@ -992,10 +992,10 @@ export class Service {
     if (paused) return paused
     // An existing discussion group: blocked or paused while the request waited means it isn't touched.
     if (spec.discussion?.kind === 'existing') {
-      const { chatId, label } = spec.discussion
+      const { chatId, username, label } = spec.discussion
       const groupPaused = this.#pauseRefusal(chatId, label, 'Not created')
       if (groupPaused) return groupPaused
-      const rule = decideSend(this.d.store.get(), { id: chatId, username: null }, { isWatching: false })
+      const rule = decideSend(this.d.store.get(), { id: chatId, username }, { isWatching: false })
       if (rule.action === 'block') {
         this.d.log?.(`create chat refused after approval (discussion group ${chatId}: ${rule.reason}): ${what}`)
         return fail(`Not created: the discussion group ${label} is blocked now (${rule.reason}), so it won't be linked.`)
@@ -1586,7 +1586,7 @@ export class Service {
         const groupPaused = this.#pauseRefusal(g.peer.id, g.label, 'Not created')
         if (groupPaused) return groupPaused
         // Only the checked title and the id go on the card, not the saved nickname.
-        discussion = { kind: 'existing', chatId: g.peer.id, label: `"${g.peer.name}" (id ${g.peer.id})` }
+        discussion = { kind: 'existing', chatId: g.peer.id, username: g.peer.username, label: `"${g.peer.name}" (id ${g.peer.id})` }
       }
       const spec: CreateChatSpec = {
         type: p.type,
