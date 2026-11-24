@@ -919,13 +919,15 @@ describe('editing a sent message', () => {
 describe('edit and delete approvals cannot be skipped', () => {
   let now: number
   let approvals: Approvals
+  let logs: string[]
   const TTL = 20 * 60_000
 
   beforeEach(() => {
     setup(baseConfig)
     now = 1_000_000
     approvals = new Approvals(TTL, () => now)
-    svc = new Service({ store, tg, hub, approvals, eventsUrl: () => 'ws://x' })
+    logs = []
+    svc = new Service({ store, tg, hub, approvals, eventsUrl: () => 'ws://x', log: m => logs.push(m) })
   })
 
   /** Messages s1 sent to leo, which then moved to Ask every time. */
@@ -985,6 +987,14 @@ describe('edit and delete approvals cannot be skipped', () => {
       }
       nothingChanged()
       expect(svc.uiState().recent).toEqual(before)
+    })
+
+    test(`a timed-out ${action} gets a line in daemon.log`, async () => {
+      const id = await ownMessage()
+      await svc.call('s1', tool, args(id))
+      now += TTL + 1
+      svc.sweepApprovals()
+      expect(logs.filter(l => l.startsWith(`${action} expired`) && l.includes(`message #${id}`))).toHaveLength(1)
     })
 
     test(`retrying ${action === 'edit' ? 'an edit' : 'a delete'} asks again every time, never runs without a yes`, async () => {

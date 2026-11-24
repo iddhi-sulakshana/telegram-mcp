@@ -19,7 +19,7 @@ let svc: Service
 let pauses: Pauses
 let logs: string[]
 
-function setup(config: object = { chatCreation: { enabled: true } }) {
+function setup(config: object = { chatCreation: { enabled: true } }, approvals = new Approvals()) {
   const dir = mkdtempSync(join(tmpdir(), 'tgmcp-create-'))
   const path = join(dir, 'config.json')
   writeFileSync(
@@ -46,7 +46,7 @@ function setup(config: object = { chatCreation: { enabled: true } }) {
     tg,
     hub,
     pauses,
-    approvals: new Approvals(),
+    approvals,
     eventsUrl: sid => `ws://x/events?session=${sid}`,
     log: m => logs.push(m),
   })
@@ -343,6 +343,21 @@ describe('telegram_create_chat: approval', () => {
     const res = await tray(r.approval!.id, true)
     expect(res.isError).toBe(true)
     expect(tg.created).toHaveLength(0)
+    expect(logs.some(l => l.startsWith('create chat refused after approval (paused by a moderator)') && l.includes('"News"'))).toBe(true)
+  })
+
+  test('a request nobody decided in time is logged when it expires', async () => {
+    let now = Date.now()
+    const approvals = new Approvals(1000, () => now)
+    setup(undefined, approvals)
+    trayOpen()
+    const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News' })
+    svc.sweepApprovals()
+    expect(logs.some(l => l.startsWith('create chat expired'))).toBe(false)
+    now += 5000
+    svc.sweepApprovals()
+    expect(logs.some(l => l.startsWith('create chat expired') && l.includes('channel "News"'))).toBe(true)
+    expect((await approvals.wait(r.approval!.id)).result.text).toContain('Nothing was created')
   })
 })
 
@@ -448,6 +463,7 @@ describe('telegram_create_chat: the discussion group', () => {
     expect(res.isError).toBe(true)
     expect(res.text).toContain('paused')
     expect(tg.created).toHaveLength(0)
+    expect(logs.some(l => l.startsWith(`create chat refused after approval (discussion group ${TEAM_QA.id} paused`))).toBe(true)
   })
 })
 

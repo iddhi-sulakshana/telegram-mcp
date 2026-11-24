@@ -139,13 +139,17 @@ export class Approvals {
     })
   }
 
-  sweep(): void {
+  /** Settles every draft nobody decided in time, and returns them. */
+  sweep(): PendingSend[] {
     const now = this.now()
+    const expired: PendingSend[] = []
     for (const [id, item] of this.#items) {
       if (now - item.createdAt <= this.ttlMs) continue
       this.#items.delete(id)
       this.settle(id, { approved: false, result: { text: expiredText(item, this.ttlMs / 60_000), isError: true } })
+      expired.push(item)
     }
+    return expired
   }
 }
 

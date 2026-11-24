@@ -5,6 +5,7 @@ Each release's section here becomes its "What's new" on GitHub. Add the next one
 
 ## Unreleased
 
+- **`daemon.log` has every outcome of a new chat**: a `telegram_create_chat` request refused on approval because a moderator paused Claude (everywhere, or in the discussion group) now gets its line, and so does a create, edit or delete that nobody decided within 20 minutes.
 - **The 3-request limit for new chats holds for calls made at once**: a session that called `telegram_create_chat` several times in parallel, with an existing discussion group, could get past the limit of 3 requests waiting. The count is now taken again just before the request is added.
 - **A discussion group blocked by @username stays unlinked**: if you block an existing discussion group by its `@username` while a `telegram_create_chat` request waits, approving the request is now refused, as it already was for a block by nickname or id.
 - **Nicknames stay on one line**: a nickname or alias with a control character, a text direction mark or a Unicode line or paragraph separator (U+0085, U+2028, U+2029) is now refused, by `telegram_save_chat` and by a rename on the Contacts page. The new-chat card names an existing discussion group by its title and id only, without its saved nickname.

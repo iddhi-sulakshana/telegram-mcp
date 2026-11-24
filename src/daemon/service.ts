@@ -442,6 +442,15 @@ export class Service {
       : ` Saved as "${name}"${note} with "ask every time": next messages there need approval too.`
   }
 
+  /** Drops drafts nobody decided in time. A create, edit or delete gets its line in daemon.log, like its other outcomes. */
+  sweepApprovals(): void {
+    const minutes = this.d.approvals.ttlMs / 60_000
+    for (const item of this.d.approvals.sweep()) {
+      if (item.action === 'create') this.d.log?.(`create chat expired (nobody decided within ${minutes} minutes): ${createLogLine(item.create!)}`)
+      else if (item.action) this.d.log?.(`${item.action} expired (nobody decided within ${minutes} minutes): ${changeLogLine(item)}`)
+    }
+  }
+
   /** Approve or deny a draft. `sessionId` null = the menu bar, which may decide for any session. */
   async decide(
     id: string,
@@ -989,12 +998,18 @@ export class Service {
       return fail(`Not created: creating chats was turned off (chatCreation.enabled) while the ${item.chatLabel} waited.`)
     }
     const paused = this.#pauseRefusal(0, 'every chat', 'Not created')
-    if (paused) return paused
+    if (paused) {
+      this.d.log?.(`create chat refused after approval (paused by a moderator): ${what}`)
+      return paused
+    }
     // An existing discussion group: blocked or paused while the request waited means it isn't touched.
     if (spec.discussion?.kind === 'existing') {
       const { chatId, username, label } = spec.discussion
       const groupPaused = this.#pauseRefusal(chatId, label, 'Not created')
-      if (groupPaused) return groupPaused
+      if (groupPaused) {
+        this.d.log?.(`create chat refused after approval (discussion group ${chatId} paused by a moderator): ${what}`)
+        return groupPaused
+      }
       const rule = decideSend(this.d.store.get(), { id: chatId, username }, { isWatching: false })
       if (rule.action === 'block') {
         this.d.log?.(`create chat refused after approval (discussion group ${chatId}: ${rule.reason}): ${what}`)
