@@ -27,7 +27,7 @@ import { looksLikeReplyCommand, parseReplyCommand } from '../shared/takeover'
 import { fmtMinutes, looksLikeBotsCommand, moderatorCommand, parseBotsCommand, stopMinutes } from '../shared/moderation'
 import type { IncomingMessage, MessageInfo, PeerInfo, SendMode, SentRecord, TgEvent, ToolResult, UiContact, UiModeration, UiPage, UiState } from '../shared/protocol'
 import { CHAT_KINDS, CHAT_TITLE_MAX, TOOLS, chatKindOf, isToolName, type ToolInput, type ToolName } from '../shared/tools'
-import { fieldName, inlineQuote, messageBody, oneLine, quoted } from '../shared/text'
+import { fieldName, inlineQuote, messageBody, oneLine, quoted, senderLabel } from '../shared/text'
 import { uiAway, type AwayResponder } from './away'
 import type { Approvals, CreateChatSpec, DecideOptions, PendingSend } from './approvals'
 import type { Pause, Pauses } from './moderation'
@@ -161,9 +161,9 @@ function clip(s: string, n: number): string {
 }
 
 export function fmtMessage(m: MessageInfo): string {
-  // Anyone else carries their id, so a display name like "me" can't pass for the user's own messages.
-  // The name loses its own brackets, so "Leo (@leo, id 1)" can't show an id ahead of the real one.
-  const who = m.outgoing ? 'me' : m.from ? `${fieldName(m.from.name)} (${m.from.username ? `@${m.from.username}, ` : ''}id ${m.from.id})` : 'unknown'
+  // Anyone else starts with their id, before the name, so a display name like "me" can't pass for the
+  // user's own messages, and a name (which has no brackets of its own) can't show an id ahead of it.
+  const who = m.outgoing ? 'me' : m.from ? senderLabel(m.from.id, m.from.name, m.from.username) : 'unknown'
   const marks = [m.replyToId ? `reply to #${m.replyToId}` : null, m.topicId ? `topic ${m.topicId}` : null].filter(Boolean)
   // Every line of the text is quoted, so none of it can pass for the next message's line.
   return `#${m.id} ${m.date.slice(0, 16).replace('T', ' ')} ${who}${marks.length ? ` (${marks.join(', ')})` : ''}: ${quoted(messageBody(m.text, m.media, '[empty]'))}`

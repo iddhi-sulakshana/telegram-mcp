@@ -196,7 +196,7 @@ describe('watching', () => {
     tg.emit(LEO.id, 'here you go')
     const e = await svc.call('s1', 'telegram_get_events', {})
     expect(e.text).toContain('here you go')
-    expect(e.text).toContain('Leo Perera (@leo_p, id 10)')
+    expect(e.text).toContain('[id 10] Leo Perera (@leo_p)')
     expect(e.text).toContain('[leo]')
 
     // Other sessions see nothing.
@@ -229,9 +229,9 @@ describe('watching', () => {
     from(LEO.id, 'three')
     const heads = (await svc.call('s1', 'telegram_get_events', {})).text.split('\n').filter(l => l.startsWith('Telegram message from'))
     expect(heads.map(h => h.split(' in Team QA')[0])).toEqual([
-      'Telegram message from Bob @leo (id 60)',
-      'Telegram message from Leo Perera (id 61)',
-      'Telegram message from Leo Perera (@leo_p, id 10)',
+      'Telegram message from [id 60] Bob @leo',
+      'Telegram message from [id 61] Leo Perera',
+      'Telegram message from [id 10] Leo Perera (@leo_p)',
     ])
 
     // The same header in a Monitor notification.
@@ -240,8 +240,8 @@ describe('watching', () => {
     from(60, 'four')
     from(61, 'five')
     expect(frames.map(f => f.split('\n')[0]!.split(' · ')[0])).toEqual([
-      `Telegram message from Bob @leo (id 60) in Team QA [qa]`,
-      `Telegram message from Leo Perera (id 61) in Team QA [qa]`,
+      `Telegram message from [id 60] Bob @leo in Team QA [qa]`,
+      `Telegram message from [id 61] Leo Perera in Team QA [qa]`,
     ])
   })
 })

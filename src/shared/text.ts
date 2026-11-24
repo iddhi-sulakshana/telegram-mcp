@@ -16,21 +16,27 @@ export function oneLine(text: string): string {
 /** What splits the fields of our header lines (" · "), and characters that look like it. */
 const FIELD_SEP = /[\u00b7\u0387\u2022\u2027\u2219\u22c5\u30fb\uff65]/gu
 
-/**
- * Round and square brackets, and characters that look like them (fullwidth, small, super- and
- * subscript, ornate, white and the like). Our header lines put a name's id and username in round
- * brackets and a saved nickname in square ones.
- */
-const BRACKETS =
-  /[()[\]\uff08\uff09\uff3b\uff3d\ufe59\ufe5a\ufe5d\ufe5e\u207d\u207e\u208d\u208e\ufd3e\ufd3f\u2768-\u276b\u27ee\u27ef\u27e6\u27e7\u2985\u2986\u2e28\u2e29\u3014\u3015\u3018\u3019\u301a\u301b]/gu
+/** Opening and closing punctuation of every kind: ( ) [ ] { } 【 】 ⟨ ⟩ ⌈ ⌉ and the rest (Unicode Ps, Pe). */
+const BRACKETS = /[\p{Ps}\p{Pe}]/gu
+/** Opening and closing quotation marks other than ASCII ' and " (Unicode Pi, Pf): ‘ ’ “ ” « » ‹ › and the like. */
+const QUOTES = /[\p{Pi}\p{Pf}]/gu
 
 /**
- * A name placed among a header line's fields, like "Anna (@anna, id 123) in Team QA [qa] · chat_id …":
- * one line, with no field separator and no brackets of its own (each becomes a space), so it can't add
- * a field, pass for a nickname, or show an id of its own ahead of the real "(id N)".
+ * A name placed among a header line's fields, like "[id 123] Anna (@anna) in Team QA [qa] · chat_id …":
+ * one line, NFKC-normalised (so look-alikes such as fullwidth letters and brackets become plain ones),
+ * with no field separator, no brackets of any kind (each becomes a space) and its quotation marks made
+ * a plain apostrophe. So it can't add a field, pass for a nickname, or carry an id of its own.
  */
 export function fieldName(text: string): string {
-  return oneLine(text.replace(FIELD_SEP, '-').replace(BRACKETS, ' '))
+  return oneLine(text.normalize('NFKC').replace(FIELD_SEP, '-').replace(BRACKETS, ' ').replace(QUOTES, "'"))
+}
+
+/**
+ * A sender as "[id 123] Anna (@anna)": the id first, then the name, then the username if any. The id
+ * is the only thing in square brackets, since fieldName takes every bracket out of the name.
+ */
+export function senderLabel(id: number | null, name: string, username: string | null | undefined): string {
+  return `${id !== null ? `[id ${id}] ` : ''}${fieldName(name)}${username ? ` (@${username})` : ''}`
 }
 
 /** Someone else's text shown in double quotes on a header line: a field name whose own quotes are single. */
