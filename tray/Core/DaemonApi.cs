@@ -71,6 +71,9 @@ public sealed class DaemonApi(HttpClient http, int port, ITokenSource tokens, Ti
 {
     public const string NotRunning = "The daemon is not running. Start it with tgmcp daemon.";
     public const string Refused = "The daemon refused the request (token mismatch?).";
+    /// <summary>Sent on every request: this app shows new-chat requests as Create / Deny, not as a send.</summary>
+    public const string FeaturesHeader = "X-Tgmcp-Features";
+    public const string Features = "create";
     static readonly TimeSpan Timeout = TimeSpan.FromSeconds(4);
 
     readonly TimeProvider _time = time ?? TimeProvider.System;
@@ -242,6 +245,9 @@ public sealed class DaemonApi(HttpClient http, int port, ITokenSource tokens, Ti
     {
         var req = new HttpRequestMessage(method, $"http://127.0.0.1:{port}{path}");
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        // The newer approval kinds this app shows as such (src/shared/protocol.ts, UI_FEATURES_HEADER):
+        // without it the daemon keeps new-chat requests from it, since it would show one as a send.
+        req.Headers.Add(FeaturesHeader, Features);
         if (body is not null) req.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
         return req;
     }

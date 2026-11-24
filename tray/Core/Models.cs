@@ -18,7 +18,7 @@ public sealed record UiApproval(
     DateTimeOffset CreatedAt, DateTimeOffset ExpiresAt, bool FirstTime, string? Nickname, string SuggestedNickname,
     /// <summary>The chat it goes to, for its avatar. Null from a daemon older than avatars.</summary>
     long? ChatId = null,
-    /// <summary>"send" | "edit" | "delete". Null from a daemon older than edit and delete approvals: a send.</summary>
+    /// <summary>"send" | "edit" | "delete" | "create". Null from a daemon older than edit and delete approvals: a send.</summary>
     string? Action = null,
     /// <summary>The message an edit or delete is for.</summary>
     long? MessageId = null,
@@ -29,6 +29,8 @@ public sealed record UiApproval(
     public bool IsEdit => Action == "edit";
     /// <summary>A delete of a message Claude sent, for everyone, where sending needs approval.</summary>
     public bool IsDelete => Action == "delete";
+    /// <summary>A new channel or supergroup (telegram_create_chat): To names it, Text describes it in full. Only you can approve it.</summary>
+    public bool IsCreate => Action == "create";
 }
 
 public sealed record SentRecord(
