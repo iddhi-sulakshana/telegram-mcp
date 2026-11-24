@@ -117,7 +117,7 @@ describe('telegram_send_file', () => {
     expect(tg.sentFiles).toHaveLength(0)
     expect((await svc.call('s1', '__decide', { approvalId: r.approval!.id, dialogKey: r.approval!.dialogKey, approve: true })).isError).toBeFalsy()
     expect(tg.sentFiles).toHaveLength(1)
-    expect(tg.sentFiles[0]!.file).toEqual({ path: realpathSync(report), name: 'report.pdf', size: 14 })
+    expect(tg.sentFiles[0]!.file).toEqual({ path: realpathSync.native(report), name: 'report.pdf', size: 14 })
     expect(tg.sentFiles[0]!.caption).toBe(`Q3 numbers${FOOTER}`)
     expect(tg.sent).toHaveLength(0)
   })
@@ -208,9 +208,9 @@ describe('telegram_send_file', () => {
   test('the approver sees the full path, not just the file name', async () => {
     const { svc, report } = setup()
     const r = await svc.call('s1', 'telegram_send_file', { to: 'anna', path: report, caption: 'hi' })
-    expect(r.approval!.text).toContain(`Path: ${realpathSync(report)}`)
-    expect(r.text).toContain(`Path: ${realpathSync(report)}`)
-    expect(svc.uiState().approvals[0]!.text).toContain(`Path: ${realpathSync(report)}`)
+    expect(r.approval!.text).toContain(`Path: ${realpathSync.native(report)}`)
+    expect(r.text).toContain(`Path: ${realpathSync.native(report)}`)
+    expect(svc.uiState().approvals[0]!.text).toContain(`Path: ${realpathSync.native(report)}`)
   })
 
   test('a file deleted while waiting for approval is not sent', async () => {
@@ -395,7 +395,7 @@ describe('telegram_send_sticker', () => {
 
 describe("checkSendable: the owner's protected folders (files.protectedDirs)", () => {
   function setup() {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'tgmcp-protect-')))
+    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'tgmcp-protect-')))
     const home = join(dir, 'home')
     const mcpHome = join(dir, 'mcp')
     mkdirSync(join(home, 'work', 'clients', 'acme'), { recursive: true })
@@ -458,7 +458,7 @@ describe("checkSendable: the owner's protected folders (files.protectedDirs)", (
 
 describe('telegram_send_file and files.protectedDirs', () => {
   function setup(protectedDirs: string[]) {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'tgmcp-')))
+    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'tgmcp-')))
     const mcpHome = join(dir, 'mcp')
     mkdirSync(mcpHome)
     mkdirSync(join(dir, 'vault'))
