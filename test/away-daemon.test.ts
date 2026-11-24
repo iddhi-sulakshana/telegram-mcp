@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, setSystemTime, test } from 'bun:test'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -195,15 +195,31 @@ describe('POST /ui/away', () => {
     })
 
   test('edits the settings, rejects nothing-to-change, and needs the token', async () => {
-    const { daemon } = await daemonAway({})
-    const ok = await call(daemon, { until: '07:30' })
-    expect(ok.status).toBe(200)
-    const state = (await (await fetch(`http://127.0.0.1:${daemon.port}/ui/state`, { headers: { authorization: `Bearer ${daemon.token}` } })).json()) as { away: { until: string } }
-    expect(state.away.until).toBe('07:30')
-    const empty = await call(daemon, {})
-    expect(empty.status).toBe(400)
-    expect(((await empty.json()) as { text: string }).text).toContain('nothing to change')
-    expect((await call(daemon, { until: '07:30' }, false)).status).toBe(401)
-    await daemon.stop()
+    // An "until" with no schedule name goes to the schedule replying now, and /ui/state shows that one.
+    // Pinned to local noon, inside Daytime (08:00-21:00) before and after the edit. Unpinned, between
+    // 07:30 and 08:00 the edit moved Night's end to before now, so /ui/state then showed Daytime's 21:00.
+    const noon = new Date()
+    noon.setHours(12, 0, 0, 0)
+    setSystemTime(noon)
+    try {
+      const { daemon } = await daemonAway({})
+      const ok = await call(daemon, { until: '07:30' })
+      expect(ok.status).toBe(200)
+      const state = (await (await fetch(`http://127.0.0.1:${daemon.port}/ui/state`, { headers: { authorization: `Bearer ${daemon.token}` } })).json()) as {
+        away: { until: string; schedules: { id: string; until: string }[] }
+      }
+      expect(state.away.until).toBe('07:30')
+      expect(state.away.schedules.map(s => [s.id, s.until])).toEqual([
+        ['day', '07:30'],
+        ['night', '08:00'],
+      ])
+      const empty = await call(daemon, {})
+      expect(empty.status).toBe(400)
+      expect(((await empty.json()) as { text: string }).text).toContain('nothing to change')
+      expect((await call(daemon, { until: '07:30' }, false)).status).toBe(401)
+      await daemon.stop()
+    } finally {
+      setSystemTime()
+    }
   })
 })
