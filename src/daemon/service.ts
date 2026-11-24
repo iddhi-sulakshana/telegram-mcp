@@ -1563,10 +1563,14 @@ export class Service {
       if (!this.uiCanCreate()) {
         return fail('Not created: the menu bar or tray app running is too old to show a new-chat request. Ask the user to update it, then try again.')
       }
-      const waitingHere = this.d.approvals.list().filter(a => a.action === 'create' && a.sessionId === sid).length
-      if (waitingHere >= MAX_WAITING_CREATES) {
-        return fail(`Not created: this session already has ${waitingHere} new chats waiting for the user. Wait for them to decide, or drop one with telegram_cancel_send.`)
+      const tooMany = () => {
+        const waitingHere = this.d.approvals.list().filter(a => a.action === 'create' && a.sessionId === sid).length
+        return waitingHere >= MAX_WAITING_CREATES
+          ? fail(`Not created: this session already has ${waitingHere} new chats waiting for the user. Wait for them to decide, or drop one with telegram_cancel_send.`)
+          : null
       }
+      const full = tooMany()
+      if (full) return full
       const username = p.username?.replace(/^@/, '')
       let discussion: CreateChatSpec['discussion']
       if (p.discussion?.kind === 'new') {
@@ -1599,6 +1603,9 @@ export class Service {
       const detail = `${spec.type} · ${username ? `public @${username}` : 'private'}`
       const text = describeCreate(spec)
       const reason = 'creating a chat always needs the user\'s yes in the menu bar or tray app'
+      // Counted again: other calls from this session may have added theirs while the group was looked up.
+      const fullNow = tooMany()
+      if (fullNow) return fullNow
       const pending = this.d.approvals.create({
         action: 'create',
         create: spec,

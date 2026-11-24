@@ -325,6 +325,16 @@ describe('telegram_create_chat: approval', () => {
     expect((await svc.call('s2', 'telegram_create_chat', { type: 'supergroup', title: 'E' })).isError).toBeFalsy()
   })
 
+  test('the cap holds for calls made at the same time, even while a group is looked up', async () => {
+    const calls = ['A', 'B', 'C', 'D', 'E'].map(title =>
+      svc.call('s1', 'telegram_create_chat', { type: 'channel', title, discussion: { kind: 'existing', chat: 'qa' } }),
+    )
+    const results = await Promise.all(calls)
+    expect(results.filter(r => !r.isError)).toHaveLength(3)
+    expect(results.filter(r => r.isError).every(r => r.text.includes('3 new chats waiting'))).toBe(true)
+    expect(svc.uiState({ create: true }).approvals).toHaveLength(3)
+  })
+
   test('a /bots stop all placed while it waits: refused on approval', async () => {
     setup({ chatCreation: { enabled: true }, moderation: { enabled: true, moderators: [ANNA.id] } })
     trayOpen()
