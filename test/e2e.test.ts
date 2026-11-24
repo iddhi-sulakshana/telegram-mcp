@@ -65,9 +65,9 @@ function nextFrame(ws: WebSocket, ms = 5_000): Promise<string> {
   })
 }
 
-function openWs(url: string): Promise<WebSocket> {
+function openWs(url: string, headers?: Record<string, string>): Promise<WebSocket> {
   return new Promise((res, rej) => {
-    const ws = new WebSocket(url)
+    const ws = new WebSocket(url, headers ? { headers } : undefined)
     ws.onopen = () => res(ws)
     ws.onerror = () => rej(new Error(`could not open ${url}`))
   })
@@ -278,7 +278,7 @@ describe('proxy <-> daemon', () => {
     expect(w.text).toContain('<channel>')
     tg.emit(LEO.id, 'pushed!')
     await until(() => got.length > 0)
-    expect(got[0]!.content).toBe('pushed!')
+    expect(got[0]!.content).toBe('> pushed!')
     expect(got[0]!.meta).toMatchObject({ chat: 'leo', chat_id: String(LEO.id), from: 'Leo Perera' })
     await client.close()
   })
@@ -430,8 +430,8 @@ describe('proxy <-> daemon', () => {
   })
 
   test('a Monitor can connect before its proxy (right after a daemon restart)', async () => {
-    const url = `ws://127.0.0.1:${port}/events?session=s_early123&token=${daemon.token}`
-    const ws = await openWs(url)
+    const url = `ws://127.0.0.1:${port}/events?session=s_early123`
+    const ws = await openWs(url, { authorization: `Bearer ${daemon.token}` })
     expect(daemon.hub.has('s_early123')).toBe(true)
     ws.close()
   })
@@ -452,6 +452,18 @@ describe('proxy <-> daemon', () => {
     expect(status.status).toBe(401)
     await call(client, 'telegram_unwatch', { all: true })
     await client.close()
+  })
+
+  test('the token is only taken from the Authorization header, never from the URL', async () => {
+    const t = daemon.token
+    await expect(openWs(`ws://127.0.0.1:${port}/bridge?token=${t}`)).rejects.toThrow()
+    await expect(openWs(`ws://127.0.0.1:${port}/events?session=s_query123&token=${t}`)).rejects.toThrow()
+    expect((await fetch(`http://127.0.0.1:${port}/status?token=${t}`)).status).toBe(401)
+    expect((await fetch(`http://127.0.0.1:${port}/ui/state?token=${t}`)).status).toBe(401)
+    // The same token in the header works.
+    const ws = await openWs(`ws://127.0.0.1:${port}/bridge`, { authorization: `Bearer ${t}` })
+    ws.close()
+    expect((await fetch(`http://127.0.0.1:${port}/status`, { headers: { authorization: `Bearer ${t}` } })).status).toBe(200)
   })
 
   test('rejects requests without the token', async () => {

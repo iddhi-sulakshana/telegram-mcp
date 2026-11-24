@@ -30,14 +30,18 @@ describe('decideSend', () => {
     expect(decideSend(config, { id: 12 }, off).action).toBe('approve')
     expect(decideSend(config, { id: 12 }, { isWatching: true }).action).toBe('send')
   })
-  test('a file to a watched chat asks, even on autoSend; text does not', () => {
+  test('a file always asks, whatever the lists or the watch say; text does not', () => {
     const watchingFile = { isWatching: true, file: true }
     expect(decideSend(config, { id: 12 }, watchingFile).action).toBe('approve') // autoReply, watched
     expect(decideSend(config, { id: 10 }, watchingFile).action).toBe('approve') // autoSend, watched
-    expect(decideSend(config, { id: 10 }, { isWatching: false, file: true }).action).toBe('send') // autoSend, not watched
+    expect(decideSend(config, { id: 10 }, { isWatching: false, file: true }).action).toBe('approve') // autoSend, not watched
+    expect(decideSend(config, { id: 10 }, { isWatching: false, file: true, takenOver: true }).action).toBe('approve') // handed over with /reply
     expect(decideSend(config, { id: 12 }, { isWatching: true, file: false }).action).toBe('send') // text reply
-    // It only ever adds a question: blocked stays blocked.
+    expect(decideSend(config, { id: 10 }, off).action).toBe('send') // text to autoSend
+    // It only ever adds a question: blocked stays blocked, and so does a chat on no list under "block".
     expect(decideSend(config, { id: -1005550001111 }, watchingFile).action).toBe('block')
+    const strict = parseConfig(JSON.stringify({ defaultPolicy: 'block' }))
+    expect(decideSend(strict, { id: 99 }, { isWatching: false, file: true }).action).toBe('block')
   })
   test('unlisted chats follow defaultPolicy', () => {
     expect(decideSend(config, { id: 99 }, off).action).toBe('approve')

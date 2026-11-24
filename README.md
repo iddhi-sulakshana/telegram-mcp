@@ -62,7 +62,7 @@ Nothing secret is kept in a plain file. Three secrets go to the operating system
 | Secret | What it is |
 | --- | --- |
 | `session-key` | Encrypts the Telegram auth key inside `session.db` (AES-256-GCM) |
-| `token` | Shared secret for the local API, so web pages and other users can't talk to the daemon |
+| `token` | Shared secret for the local API, so web pages and other users can't talk to the daemon. Clients send it in the `Authorization: Bearer` header, also on WebSocket upgrades; a token in the URL is refused |
 | `credentials` | api_id / api_hash |
 
 **Why the session key matters.** A Telegram auth key *is* your login: whoever copies it is you, with no code and no 2FA asked. `session.db` still holds the peer cache and update state, but its auth key rows are sealed with `session-key`. A copy of the folder alone (a backup, a synced dotfiles repo, a stolen disk image, or an infostealer that grabs `~/.config`) doesn't give anyone your account.
@@ -123,7 +123,7 @@ Downloads go to `~/Downloads/telegram-mcp/<chat>/` (`TELEGRAM_MCP_DOWNLOADS`), n
 
 **autoReply** chats are the ones Claude sessions may listen to. A session subscribes with `telegram_watch` and stays subscribed until it says stop. Every incoming message from that chat goes to every subscribed session, and each one decides how to reply (the auto reply happens on the Claude side). While subscribed, a session's replies to that chat go out without approval, unless the chat is also on `requireApproval` or `blocked`.
 
-**Files to a watched chat always ask**, even when the chat is on `autoSend`. While a session watches a chat it acts on what people there write, so "send me that file" may be their request, not yours. Text replies still follow the lists. Files to an `autoSend` chat that the session isn't watching go out without asking. Taking a chat off the list stops delivery at once.
+**Files always ask**, in every chat that isn't blocked, even on `autoSend`, in a watched chat or under a `/reply` takeover. A file can be anything on this machine, and "send me that file" may come from someone in a chat the session reads, not from you. Only you can approve a file, in the menu bar or tray app or in Claude Code's approval dialog; `telegram_confirm_send` can't. Text messages still follow the lists, and `blocked` still refuses. Deleting a file a session sent asks the same way. Taking a chat off the list stops delivery at once.
 
 **First message to a new chat.** A chat that is on neither `autoSend` nor `requireApproval` always needs approval. The approval also asks what should happen next time:
 - **Always allow** puts it on `autoSend`.
@@ -154,7 +154,7 @@ Nothing is sent unless you accept. Drafts expire after 20 minutes. The rules are
 | `telegram_send_message` | send, following the rules |
 | `telegram_delete_message` | delete a message this session sent recently, for everyone in the chat; same limits as edit (its own messages only; at once where sending needs no approval, after your approval where it does, refused where blocked), logged, can't be undone |
 | `telegram_edit_message` | change the text of a text message this session sent recently (chat and message id). The chat sees the new text, so it follows the sending rules: at once where sending needs no approval, after your approval where it does (you see the old and the new text), refused where blocked. Never another session's message, yours (the Page button's included), the pager's or an away reply. The footer is added again, Recently sent shows it as edited and keeps the original, and `daemon.log` has a line for each edit |
-| `telegram_send_file` | send a local file with a caption, following the same rules (but see files to watched chats, above); credentials and this tool's own files are always refused |
+| `telegram_send_file` | send a local file with a caption; it always waits for your approval (see files, above) and blocked chats refuse it; credentials (SSH keys, `.env` files, `.git-credentials`, cloud logins, `~/.claude` and `~/.claude.json`) and this tool's own files are always refused |
 | `telegram_send_sticker` | re-send a sticker someone posted (by chat and message id), following the same rules; stickers take no caption, so no footer |
 | `telegram_page` | page the user for something that needs a human now: the desktop rings until they ack, and the phone gets a push (see [Pages](#pages)) |
 | `telegram_list_topics` | list a forum group's topics (id and title), to find the one named after a project before watching it |

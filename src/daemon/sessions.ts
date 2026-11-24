@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerMessage, TgEvent, WatchSpec } from '../shared/protocol'
+import { messageBody, oneLine, quoted } from '../shared/text'
 
 export interface Sink {
   send(data: string): unknown
@@ -366,7 +367,7 @@ export class SessionHub {
 
 /** One readable block per message, for Monitor notifications and get_events. */
 export function formatEvent(e: TgEvent): string {
-  const where = e.chatNickname ? `${e.chatLabel} [${e.chatNickname}]` : e.chatLabel
+  const where = oneLine(e.chatNickname ? `${e.chatLabel} [${e.chatNickname}]` : e.chatLabel)
   if (e.takeover?.action === 'start') {
     return [
       `Takeover: the user typed /reply in ${where} · chat_id ${e.chatId}`,
@@ -386,7 +387,7 @@ export function formatEvent(e: TgEvent): string {
     return `Moderator pause lifted for ${scope}. Watched messages come to you again; carry on only as the user asked when they started the watch.`
   }
   if (e.takeover?.action === 'stop') return `Takeover ended: the user typed /reply stop in ${where} · chat_id ${e.chatId}. Stop replying there.`
-  const who = e.fromUsername ? `${e.fromName} (@${e.fromUsername})` : e.fromName
+  const who = oneLine(e.fromUsername ? `${e.fromName} (@${e.fromUsername})` : e.fromName)
   const head = [
     `Telegram message from ${who} in ${where}`,
     `chat_id ${e.chatId}`,
@@ -397,6 +398,6 @@ export function formatEvent(e: TgEvent): string {
   ]
     .filter(Boolean)
     .join(' · ')
-  const body = e.text || (e.media ? `[${e.media}]` : '[empty message]')
-  return `${head}\n${e.media && e.text ? `[${e.media}] ` : ''}${body}`
+  // Everything below the header is the sender's, so every line of it is quoted.
+  return `${head}\n${quoted(messageBody(e.text, e.media, '[empty message]'))}`
 }

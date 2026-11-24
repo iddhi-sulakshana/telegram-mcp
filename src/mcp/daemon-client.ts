@@ -1,8 +1,14 @@
 import type { ClientMessage, ServerMessage, TelegramState, TgEvent, ToolResult, WatchSpec } from '../shared/protocol'
 
+/** Where the daemon is and the token to show it. The token goes in the Authorization header, never in the URL. */
+export interface DaemonTarget {
+  url: string
+  token: string
+}
+
 export interface DaemonClientOptions {
   /** Built fresh on every attempt (the token may appear after we start). Null = not ready yet. */
-  url: () => string | null | Promise<string | null>
+  target: () => DaemonTarget | null | Promise<DaemonTarget | null>
   sessionId: string
   label: string
   channel: boolean
@@ -57,25 +63,25 @@ export class DaemonClient {
 
   async #connect() {
     if (this.#closed) return
-    let url: string | null
+    let target: DaemonTarget | null
     try {
-      url = await this.o.url()
+      target = await this.o.target()
       this.#lastUrlError = null
     } catch (e) {
       // Usually the keystore saying no. Say it once, not on every retry.
       const why = e instanceof Error ? e.message : String(e)
       if (why !== this.#lastUrlError) this.o.log(why)
       this.#lastUrlError = why
-      url = null
+      target = null
     }
     if (this.#closed) return
-    if (!url) {
+    if (!target) {
       this.#retry()
       return
     }
     let ws: WebSocket
     try {
-      ws = new WebSocket(url)
+      ws = new WebSocket(target.url, { headers: { authorization: `Bearer ${target.token}` } })
     } catch (e) {
       this.o.log(`daemon connect failed: ${e}`)
       this.#retry()
