@@ -231,8 +231,7 @@ describe('telegram_send_file', () => {
     writeFileSync(join(dir, 'id_ed25519'), 'key')
     writeFileSync(join(dir, 'server.pem'), 'key')
     writeFileSync(join(mcpHome, 'session.db'), 'auth key')
-    symlinkSync(join(mcpHome, 'session.db'), join(dir, 'innocent.txt'))
-    for (const path of [join(dir, '.env'), join(dir, 'id_ed25519'), join(dir, 'server.pem'), join(mcpHome, 'session.db'), join(dir, 'innocent.txt')]) {
+    for (const path of [join(dir, '.env'), join(dir, 'id_ed25519'), join(dir, 'server.pem'), join(mcpHome, 'session.db')]) {
       const r = await svc.call('s1', 'telegram_send_file', { to: 'leo', path })
       expect(r.isError).toBe(true)
       expect(r.text).toContain('Refusing')
@@ -242,6 +241,18 @@ describe('telegram_send_file', () => {
     expect((await svc.call('s1', 'telegram_send_file', { to: 'leo', path: dir })).text).toContain('Not a regular file')
     expect((await svc.call('s1', 'telegram_send_file', { to: 'leo', path: join(dir, 'nope') })).text).toContain('No such file')
     expect(tg.sentFiles).toHaveLength(0)
+  })
+})
+
+describe('telegram_send_file: links', () => {
+  // POSIX: creating a symlink on Windows needs admin rights or Developer Mode.
+  test.skipIf(process.platform === 'win32')('a symlink to its own login files is refused', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tgmcp-'))
+    const mcpHome = join(dir, 'mcp')
+    mkdirSync(mcpHome)
+    writeFileSync(join(mcpHome, 'session.db'), 'auth key')
+    symlinkSync(join(mcpHome, 'session.db'), join(dir, 'innocent.txt'))
+    expect(() => checkSendable(join(dir, 'innocent.txt'), { mcpHome, home: join(dir, 'home') })).toThrow('Refusing')
   })
 })
 
@@ -426,7 +437,8 @@ describe("checkSendable: the owner's protected folders (files.protectedDirs)", (
     expect(checkSendable(near, { mcpHome, home }).name).toBe('ok.txt')
   })
 
-  test.skipIf(process.platform === 'win32')('a link into a protected folder, or the folder named by a link, is refused (symlinks need admin on Windows)', () => {
+  // POSIX: creating a symlink on Windows needs admin rights or Developer Mode.
+  test.skipIf(process.platform === 'win32')('a link into a protected folder, or the folder named by a link, is refused', () => {
     const { dir, home, mcpHome, inVault } = setup()
     const link = join(dir, 'innocent.txt')
     symlinkSync(inVault, link)

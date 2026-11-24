@@ -40,6 +40,10 @@ describe('where secrets go', () => {
   test('the default home uses bare names, any other home gets its own entries', () => {
     expect(keychainAccount('token', defaultHome())).toBe('token')
     expect(keychainAccount('token', `${defaultHome()}/`)).toBe('token')
+  })
+
+  // POSIX: Windows resolves "/tmp/…" against the current drive, so the account reads "C:\\tmp\\…".
+  test.skipIf(process.platform === 'win32')('another home gets its own entries', () => {
     expect(keychainAccount('session-key', '/tmp/tgmcp-demo')).toBe('session-key@/tmp/tgmcp-demo')
   })
 
@@ -61,7 +65,6 @@ describe('file store', () => {
     expect(await files.get('token')).toBeNull()
     await files.set('token', 'abc')
     expect(await files.get('token')).toBe('abc')
-    expect(statSync(paths.token).mode & 0o777).toBe(0o600)
     expect(files.present()).toEqual(['token'])
     expect(await files.delete('token')).toBe(true)
     expect(await files.delete('token')).toBe(false)
@@ -69,8 +72,18 @@ describe('file store', () => {
   })
 })
 
+describe('file store permissions', () => {
+  // POSIX: Windows has no 0600 mode bits (stat reports 0666); there the file sits in the user's own profile.
+  test.skipIf(process.platform === 'win32')('a secret file is private to its owner (0600)', async () => {
+    const paths = tempPaths()
+    await new FileSecretStore(paths).set('token', 'abc')
+    expect(statSync(paths.token).mode & 0o777).toBe(0o600)
+  })
+})
+
 describe('keychain store', () => {
-  test('stores under service telegram-mcp, account named after the secret and home', async () => {
+  // POSIX: the account carries the resolved home, which on Windows is "C:\\tmp\\x", not "/tmp/x".
+  test.skipIf(process.platform === 'win32')('stores under service telegram-mcp, account named after the secret and home', async () => {
     const kc = new FakeKeystore()
     const store = new KeychainSecretStore('/tmp/x', { backend: kc })
     await store.set('token', 't1')
