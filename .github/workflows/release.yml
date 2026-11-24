@@ -115,7 +115,8 @@ jobs:
           set -euo pipefail
           version=$(jq -r .version package.json)
           python3 -m http.server 8765 -b 127.0.0.1 -d dist/assets >/dev/null 2>&1 &
-          sleep 1
+          for i in $(seq 1 40); do curl -sf -o /dev/null http://127.0.0.1:8765/ && break; sleep 0.25; done
+          curl -sf -o /dev/null http://127.0.0.1:8765/ || { echo "The download server on 127.0.0.1:8765 did not start within 10 seconds." >&2; exit 1; }
           TGMCP_DOWNLOAD_URL=http://127.0.0.1:8765 TGMCP_INSTALL_DIR="$RUNNER_TEMP/bin" TGMCP_APP_DIR="$RUNNER_TEMP/Applications" \
             sh dist/assets/tgmcp-installer.sh
           "$RUNNER_TEMP/bin/tgmcp" version | tee version.txt
