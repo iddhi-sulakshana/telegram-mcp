@@ -1585,7 +1585,8 @@ export class Service {
         if (rule.action === 'block') return fail(`Not created: ${g.label} is blocked (${rule.reason}), so it won't be linked.`)
         const groupPaused = this.#pauseRefusal(g.peer.id, g.label, 'Not created')
         if (groupPaused) return groupPaused
-        discussion = { kind: 'existing', chatId: g.peer.id, label: `${g.label} (${fmtPeer(g.peer)})` }
+        // Only the checked title and the id go on the card, not the saved nickname.
+        discussion = { kind: 'existing', chatId: g.peer.id, label: `"${g.peer.name}" (id ${g.peer.id})` }
       }
       const spec: CreateChatSpec = {
         type: p.type,
@@ -1710,6 +1711,10 @@ export class Service {
     telegram_save_chat: async (_sid, p) => {
       const problem = validateNickname(p.nickname)
       if (problem) return fail(problem)
+      for (const alias of p.aliases ?? []) {
+        const bad = validateNickname(alias)
+        if (bad) return fail(`Alias "${oneLine(alias)}": ${bad}`)
+      }
       const nick = normalizeNickname(p.nickname)
       const config = this.d.store.get()
 

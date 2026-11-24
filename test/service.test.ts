@@ -168,6 +168,18 @@ describe('saved chats', () => {
     expect(JSON.parse(readFileSync(path, 'utf8')).chats.leo.id).toBe(LEO.id)
   })
 
+  test('a nickname or alias that could break or flip a line is refused', async () => {
+    tg.add({ id: 51, type: 'user', name: 'Other', username: 'other' })
+    for (const nickname of ['boss\u202eevil', 'boss\u0085x', 'boss\u2028x']) {
+      const r = await svc.call('s1', 'telegram_save_chat', { nickname, chat: '@other' })
+      expect(r.isError).toBe(true)
+    }
+    const alias = await svc.call('s1', 'telegram_save_chat', { nickname: 'other', chat: '@other', aliases: ['x\u202ey'] })
+    expect(alias.isError).toBe(true)
+    expect(alias.text).toContain('Alias')
+    expect(Object.values(JSON.parse(readFileSync(path, 'utf8')).chats).some((e: any) => e.id === 51)).toBe(false)
+  })
+
   test('alias clashes are refused', async () => {
     tg.add({ id: 51, type: 'user', name: 'Other', username: 'other' })
     const r = await svc.call('s1', 'telegram_save_chat', { nickname: 'x', chat: '@other', aliases: ['leonardo'] })

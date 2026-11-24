@@ -364,6 +364,20 @@ describe('telegram_create_chat: the discussion group', () => {
     expect(logs.some(l => l.startsWith('create chat asked:'))).toBe(false)
   })
 
+  test('an existing group goes on the card by its checked title and id, without the saved nickname', async () => {
+    // A nickname written by hand into config.json is never checked: it must not reach the card.
+    store.update(c => {
+      c.chats['qa\u202eevil'] = c.chats.qa!
+      delete c.chats.qa
+      c.rules.autoSend = ['qa\u202eevil']
+    })
+    const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'existing', chat: String(TEAM_QA.id) } })
+    expect(r.isError).toBeFalsy()
+    const text = svc.uiState({ create: true }).approvals[0]!.text
+    expect(text).not.toContain('\u202e')
+    expect(text.split('\n')).toContain(`Discussion group: "Team QA" (id ${TEAM_QA.id}), linked to it`)
+  })
+
   test('a basic group is refused before anything is asked', async () => {
     const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'existing', chat: 'old' } })
     expect(r.isError).toBe(true)

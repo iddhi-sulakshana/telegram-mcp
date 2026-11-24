@@ -64,6 +64,13 @@ describe('nicknames', () => {
     expect(validateNickname('me')).not.toBeNull()
     expect(validateNickname('  ')).not.toBeNull()
   })
+
+  test('reject control characters, direction marks and line separators', () => {
+    for (const bad of ['leo\u202e', 'le\u0085o', 'leo\u2028x', 'leo\u2029x', 'le\u200fo', 'le\u0007o', 'le\no']) {
+      expect(validateNickname(bad)).not.toBeNull()
+    }
+    expect(validateNickname('Leo Perera-2')).toBeNull()
+  })
 })
 
 describe('ConfigStore', () => {
