@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Approvals } from '../src/daemon/approvals'
@@ -254,6 +254,13 @@ describe('checkSendable: more credential files', () => {
       join(home, '.claude', 'projects', 'notes.md'),
       join(home, '.claude.json'),
       join(dir, '.claude.json.backup'),
+      join(dir, '.env-prod'),
+      join(dir, '.env_local'),
+      join(dir, '.pgpass'),
+      join(dir, '.vault-token'),
+      join(dir, 'prod.tfvars'),
+      join(dir, 'prod.auto.tfvars.json'),
+      join(dir, '.dev.vars'),
     ]
     for (const path of refused) {
       writeFileSync(path, 'x')
@@ -263,11 +270,29 @@ describe('checkSendable: more credential files', () => {
 
   test('ordinary files still pass, including ones that only look alike', () => {
     const { dir, home, mcpHome } = setup()
-    for (const name of ['environment.txt', 'envoy.pdf', 'claude.json', 'git-credentials.md']) {
+    for (const name of ['environment.txt', 'envoy.pdf', 'claude.json', 'git-credentials.md', 'dev.vars.md', 'tfvars.txt', 'pgpass.txt']) {
       const path = join(dir, name)
       writeFileSync(path, 'x')
       expect(checkSendable(path, { mcpHome, home }).name).toBe(name)
     }
+  })
+
+  test('a hard-linked file is refused, under either name; a copy passes', () => {
+    const { dir, home, mcpHome } = setup()
+    mkdirSync(join(home, '.ssh'), { recursive: true })
+    const key = join(home, '.ssh', 'id_work')
+    writeFileSync(key, 'secret')
+    const report = join(dir, 'report.txt')
+    linkSync(key, report)
+    expect(() => checkSendable(report, { mcpHome, home })).toThrow('hard-linked')
+    const plain = join(dir, 'notes.txt')
+    writeFileSync(plain, 'x')
+    const other = join(dir, 'notes-link.txt')
+    linkSync(plain, other)
+    expect(() => checkSendable(plain, { mcpHome, home })).toThrow('Send a copy')
+    const copy = join(dir, 'copy.txt')
+    copyFileSync(plain, copy)
+    expect(checkSendable(copy, { mcpHome, home }).name).toBe('copy.txt')
   })
 
   // Windows reaches one file by several names: a device path, an admin share, a folder's stream name.
