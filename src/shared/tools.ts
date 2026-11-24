@@ -119,7 +119,7 @@ export const TOOLS = {
   },
   telegram_send_file: {
     description:
-      'Send a local file (any type) with an optional caption. A file always asks the user first, in every chat, even on auto-send, and only the user can approve it, in the menu bar or tray app or the approval dialog (telegram_confirm_send cannot); blocked chats are refused; the footer goes on the caption. Credentials (SSH keys, .env files, git credentials, cloud logins, Claude Code\'s settings, this tool\'s own session) are always refused.',
+      'Send a local file (any type) with an optional caption. A file always asks the user first, in every chat, even on auto-send, and only the user can approve it, in the menu bar or tray app or the approval dialog (telegram_confirm_send cannot); blocked chats are refused; the footer goes on the caption. As a safety net, common credential files (SSH keys, .env files, git credentials, cloud logins, Claude Code\'s settings), hard-linked files and this tool\'s own session are refused too.',
     input: z.object({
       to: chatRef,
       path: z.string().min(1).describe('Absolute path of the file to send.'),
@@ -194,7 +194,7 @@ export const TOOLS = {
   },
   telegram_confirm_send: {
     description:
-      'Send a message (or make an edit or delete) that is waiting for approval in chat. Only call this after the user has explicitly said yes to that exact message and recipient (or that exact edit or delete) in this conversation. Refused for messages waiting in the menu bar app, which only the user can approve. A first message to a chat saves it as "ask every time"; only the user can make a chat "always allow".',
+      'Send a message (or make an edit or delete) that is waiting for approval in chat. Only call this after the user has explicitly said yes to that exact message and recipient (or that exact edit or delete) in this conversation. Refused for messages waiting in the menu bar app, which only the user can approve. It cannot approve a file (only the user can, in the menu bar or tray app or the approval dialog) or a new chat (only in the menu bar or tray app). A first message to a chat saves it as "ask every time"; only the user can make a chat "always allow".',
     input: z.object({
       approvalId: z.string().min(1),
       nickname: z.string().optional().describe('Nickname to save the chat as, if the user gave one.'),
