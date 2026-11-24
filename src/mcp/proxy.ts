@@ -147,6 +147,8 @@ export async function runProxy(opts: { channel: boolean }): Promise<void> {
     const content = (answer.content ?? {}) as { next_time?: string; nickname?: string }
     const { result } = await daemon.call('__decide', {
       approvalId: a.id,
+      // The draft's key, from the daemon to this proxy only: it shows the model nothing of it.
+      dialogKey: a.dialogKey,
       approve: answer.action === 'accept',
       remember: content.next_time === 'autoSend' ? 'autoSend' : 'requireApproval',
       nickname: content.nickname,

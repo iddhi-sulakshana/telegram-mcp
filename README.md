@@ -51,7 +51,7 @@ tgmcp status
 
 **Upgrading** a release: run the installer again, then `tgmcp install && tgmcp menubar` to restart both on the new version. Each new version is a new program to macOS, so it asks once more whether tgmcp and "Telegram MCP" may use the "telegram-mcp" Keychain item: choose **Always Allow**. **Moving from a checkout to a release**: `tgmcp install` points the launchd agent at whichever `tgmcp` runs it, so check `which tgmcp` (a `bun link` in `~/.bun/bin` may come first on your PATH), then run `tgmcp install`, `tgmcp menubar` and `tgmcp mcp-add` again. Your config, login and secrets stay where they are.
 
-`tgmcp call <tool> '<json>'` runs any tool as a one-off session, e.g. `tgmcp call telegram_get_rules`.
+`tgmcp call <tool> '<json>'` runs any tool as a one-off session, e.g. `tgmcp call telegram_get_rules`. It runs the listed tools only: names starting with `__` are the MCP proxy's own calls (such as the dialog's answer) and are refused.
 
 API credentials come from `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` if set, otherwise the OS keystore (`tgmcp login` saves them there). Get them at https://my.telegram.org → API development tools.
 
@@ -135,7 +135,7 @@ Approving also saves the chat under `chats`, with a suggested nickname you can e
 
 **Approval** happens in the first place available:
 1. The **menu bar app**, when it's running. The draft appears there and as a notification. Both offer Approve / Deny, or Deny / Ask every time / Always allow for a new chat. The Claude tool call waits for your click: Claude Code backgrounds it after 2 minutes, and the result arrives when you decide.
-2. A **Claude Code dialog** showing the exact recipient and text, plus the next-time choice and nickname for a new chat.
+2. A **Claude Code dialog** showing the exact recipient and text, plus the next-time choice and nickname for a new chat. Each draft has its own key, which the daemon gives only to the proxy of the session that asked; the dialog's answer must carry it, so another program holding the daemon's token (`tgmcp call`, a second bridge posing as that session) can't answer the dialog for you. The key never shows in tool results, `daemon.log` or `/ui/state`.
 3. **In chat**: the tool returns an approval id. The model must ask you before it calls `telegram_confirm_send`. Here the model's word is the only check, so this path is narrower: it can't confirm a draft that is waiting in the menu bar app (even after Claude Code backgrounds the call), and a first message approved here always saves the chat as "ask every time". Only you can make a chat "always allow", in the menu bar's Contacts page, an approval there, the dialog, or `config.json`.
 
 Nothing is sent unless you accept. Drafts expire after 20 minutes. The rules are checked again at send time.

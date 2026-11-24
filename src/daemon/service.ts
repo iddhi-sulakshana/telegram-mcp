@@ -207,11 +207,26 @@ export class Service {
       return (await this.d.approvals.wait(approvalId)).result
     }
     if (method === '__decide') {
-      const { approvalId, approve, remember, nickname } = params as { approvalId: string; approve: boolean } & DecideOptions
+      const { approvalId, approve, remember, nickname, dialogKey } = params as {
+        approvalId: string
+        approve: boolean
+        dialogKey?: unknown
+      } & DecideOptions
+      const waiting = this.d.approvals.peek(approvalId)
       // The proxy only shows its dialog for drafts the menu bar isn't showing. One the menu bar
       // shows is decided there, so a dialog answer for it is refused and it keeps waiting.
-      if (this.d.approvals.peek(approvalId)?.askedInUi) {
+      if (waiting?.askedInUi) {
         return fail(`${approvalId} is waiting for the user in the menu bar or tray app. Only they can decide it there.`)
+      }
+      // Anything holding the daemon's token can open a bridge and say this; only the proxy whose
+      // dialog the user answered has the draft's key. Refused without taking the draft.
+      if (waiting && !this.d.approvals.dialogKeyMatches(approvalId, dialogKey)) {
+        this.d.log?.(
+          `dialog answer for ${approvalId} refused: it did not carry that draft's dialog key (sent by ${this.d.hub.label(sessionId)}; the draft is ${waiting.sessionLabel}'s)`,
+        )
+        return fail(
+          `${approvalId} can only be decided in the Claude Code dialog of the session that asked for it, or by the user in the menu bar or tray app. It is still waiting.`,
+        )
       }
       return this.decide(approvalId, approve, 'dialog', sessionId, { remember, nickname }).catch(e => fail(errText(e)))
     }
@@ -870,6 +885,8 @@ export class Service {
         text: asked,
         reason: decision.reason,
         uiActive,
+        // The proxy's own: it shows the dialog, and only its answer may decide it.
+        ...(uiActive ? {} : { dialogKey: pending.dialogKey }),
         firstTime,
         nickname,
         suggestedNickname: pending.suggestedNickname,
@@ -947,6 +964,7 @@ export class Service {
         text: change.text,
         reason,
         uiActive,
+        ...(uiActive ? {} : { dialogKey: pending.dialogKey }),
         firstTime: false,
         nickname,
         suggestedNickname: pending.suggestedNickname,
