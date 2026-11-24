@@ -207,6 +207,11 @@ export class Service {
     }
     if (method === '__decide') {
       const { approvalId, approve, remember, nickname } = params as { approvalId: string; approve: boolean } & DecideOptions
+      // The proxy only shows its dialog for drafts the menu bar isn't showing. One the menu bar
+      // shows is decided there, so a dialog answer for it is refused and it keeps waiting.
+      if (this.d.approvals.peek(approvalId)?.askedInUi) {
+        return fail(`${approvalId} is waiting for the user in the menu bar or tray app. Only they can decide it there.`)
+      }
       return this.decide(approvalId, approve, 'dialog', sessionId, { remember, nickname }).catch(e => fail(errText(e)))
     }
     if (!isToolName(method)) return fail(`Unknown tool: ${method}`)

@@ -263,6 +263,20 @@ describe('menu bar approvals and the sent log', () => {
     expect(svc.uiState().approvals).toHaveLength(0)
   })
 
+  test('a draft shown in the menu bar is decided there only: the dialog path is refused and it keeps waiting', async () => {
+    svc.touchUi()
+    const r = await svc.call('s1', 'telegram_send_message', { to: 'qa', text: 'QA please' })
+    expect(r.approval?.uiActive).toBe(true)
+    for (const approve of [true, false]) {
+      const d = await svc.call('s1', '__decide', { approvalId: r.approval!.id, approve, remember: 'autoSend' })
+      expect(d.isError).toBe(true)
+      expect(d.text).toContain('menu bar')
+    }
+    expect(tg.sent).toHaveLength(0)
+    expect(svc.uiState().approvals.map(a => a.id)).toEqual([r.approval!.id])
+    expect(store.get().rules.autoSend).not.toContain('qa')
+  })
+
   test('deny sends nothing and a second decision is refused', async () => {
     const r = await svc.call('s1', 'telegram_send_message', { to: 'qa', text: 'x' })
     expect(r.approval?.uiActive).toBe(false)

@@ -103,6 +103,23 @@ describe('proxy <-> daemon', () => {
     await client.close()
   })
 
+  test('the proxy only forwards the listed tools, never the internal calls', async () => {
+    // Before any menu bar test: with no app polling, the draft below waits for confirm_send, not the app.
+    const client = await spawnProxy()
+    const draft = await call(client, 'telegram_send_message', { to: 'qa', text: 'QA please' })
+    const id = /Approval id: (\S+)/.exec(draft.text)?.[1]
+    expect(id).toBeDefined()
+    const sent = tg.sent.length
+    for (const name of ['__decide', '__await_approval', 'constructor', 'no_such_tool']) {
+      const r = await call(client, name, { approvalId: id, approve: true, remember: 'autoSend' })
+      expect(r.isError).toBe(true)
+      expect(r.text).toContain('Unknown tool')
+    }
+    expect(tg.sent.length).toBe(sent)
+    await call(client, 'telegram_cancel_send', { approvalId: id })
+    await client.close()
+  })
+
   test('approval goes through the client dialog: decline sends nothing, accept sends', async () => {
     let answer: 'accept' | 'decline' = 'decline'
     let asked = 0
