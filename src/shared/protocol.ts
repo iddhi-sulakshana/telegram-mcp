@@ -127,6 +127,10 @@ export interface ApprovalRequest {
   /** An edit: the text the chat sees now (`text` is the new text). A delete: absent, `text` is the message to remove. */
   previousText?: string
   to: string
+  /** The chat's id (absent for a new chat, which has none yet, and from an older daemon). */
+  chatId?: number
+  /** The chat as the menu bar and tray cards show it next to `to`: name, @username, id and type (fmtPeer). */
+  detail?: string
   text: string
   reason: string
   /** The menu bar app is running, so the decision is made there. */

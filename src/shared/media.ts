@@ -1,6 +1,6 @@
-import { realpathSync, statSync } from 'node:fs'
+import { existsSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, isAbsolute, join, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 
 /** Naming and sizes for files moving between Telegram and disk. */
 
@@ -70,6 +70,58 @@ export function expandHome(dir: string, home: string): string {
 }
 
 /**
+ * A protectedDirs entry as the folder it names: "~" expanded, "." and ".." and trailing separators
+ * resolved away and, on Windows, trailing dots and spaces dropped from every part, as Windows itself
+ * drops them ("C:\\Secrets." is "C:\\Secrets" there).
+ */
+export function normalizeProtectedDir(dir: string, home: string, platform: string = process.platform): string {
+  const path = resolve(expandHome(dir.trim(), home))
+  if (platform !== 'win32') return path
+  const parts = path.split(/[\\/]/)
+  const kept = parts.map((p, i) => (i === 0 ? p : p.replace(/[. ]+$/, '') || p))
+  return resolve(kept.join(sep))
+}
+
+/**
+ * A folder by its real path even before it exists: the deepest part that exists is resolved (links
+ * and, on Windows, short names), and the rest added back. So a folder protected before it is made
+ * is matched once it is, and a link in the path above it is no way round it.
+ */
+export function realFolder(path: string): string {
+  let head = path
+  const rest: string[] = []
+  for (;;) {
+    try {
+      return join(realpathSync.native(head), ...rest)
+    } catch {
+      const up = dirname(head)
+      if (up === head) return path
+      rest.unshift(basename(head))
+      head = up
+    }
+  }
+}
+
+/**
+ * What /status and telegram_status warn about in files.protectedDirs: an entry whose folder doesn't
+ * exist (it is still protected by that path, from the moment it is made), one that names a file, and
+ * one that only matches once normalised (trailing dots or spaces on Windows). Empty when all is well.
+ */
+export function protectedDirWarnings(dirs: readonly string[], home: string = homedir(), platform: string = process.platform): string[] {
+  const out: string[] = []
+  for (const dir of dirs) {
+    const path = normalizeProtectedDir(dir, home, platform)
+    const plain = resolve(expandHome(dir.trim(), home))
+    if (path !== plain) out.push(`"${dir}" is read as ${path}`)
+    // Trailing dots or spaces outside Windows name a different folder, most likely by mistake.
+    else if (platform !== 'win32' && /[. ]$/.test(dir.trim()) && dir.trim() !== '~') out.push(`"${dir}" ends in a dot or space: is that the folder you meant?`)
+    if (!existsSync(path)) out.push(`"${dir}" does not exist yet (${path}): it is protected once it is made`)
+    else if (!statSync(path).isDirectory()) out.push(`"${dir}" is a file, not a folder: that file is never sent`)
+  }
+  return out
+}
+
+/**
  * Whether a local file may be sent at all, whatever the chat rules say: an absolute path to a
  * regular, non-empty file under Telegram's size limit, and not a credential. `mcpHome` is this
  * tool's own folder (login session, API token), which is never sent. `protectedDirs` are the
@@ -114,8 +166,9 @@ export function checkSendable(
   if (guarded.some(inside) || SECRET_NAMES.test(basename(real))) {
     throw new Error(`Refusing to send ${path}: it looks like a credential or this tool's own login files.`)
   }
-  // Resolved the same way as the file, so a link to the folder, or the folder by a link, is no way round it.
-  if ((o.protectedDirs ?? []).some(d => inside(realOr(expandHome(d, home))))) {
+  // Resolved the same way as the file, so a link to the folder, or the folder by a link, is no way
+  // round it; a folder that doesn't exist yet is matched by its resolved path once it does.
+  if ((o.protectedDirs ?? []).some(d => inside(realFolder(normalizeProtectedDir(d, home))))) {
     throw new Error(`Refusing to send ${path}: it is in a folder the user protected (files.protectedDirs in config.json).`)
   }
   return { path: real, name: basename(real), size: st.size }

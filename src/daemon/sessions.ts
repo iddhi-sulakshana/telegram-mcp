@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerMessage, TgEvent, WatchSpec } from '../shared/protocol'
-import { fieldName, messageBody, quoted } from '../shared/text'
+import { fieldName, messageBody, quoted, senderLabel } from '../shared/text'
 
 export interface Sink {
   send(data: string): unknown
@@ -389,8 +389,7 @@ export function formatEvent(e: TgEvent): string {
   }
   if (e.takeover?.action === 'stop') return `Takeover ended: the user typed /reply stop in ${where} · chat_id ${e.chatId}. Stop replying there.`
   // The sender's id, as in telegram_read_messages, so a display name can't pass for someone else's.
-  const tags = [e.fromUsername ? `@${e.fromUsername}` : null, e.fromId !== null ? `id ${e.fromId}` : null].filter(Boolean)
-  const who = tags.length ? `${fieldName(e.fromName)} (${tags.join(', ')})` : fieldName(e.fromName)
+  const who = senderLabel(e.fromId, e.fromName, e.fromUsername)
   const head = [
     `Telegram message from ${who} in ${where}`,
     `chat_id ${e.chatId}`,

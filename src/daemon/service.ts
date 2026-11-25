@@ -22,12 +22,12 @@ import { decideSend, policyLabel, withFooter, withoutFooter } from '../shared/po
 import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { checkSendable, describeOutgoing, fileDigest, fmtBytes, safeFileName, type OutgoingFile } from '../shared/media'
+import { checkSendable, describeOutgoing, fileDigest, fmtBytes, protectedDirWarnings, safeFileName, type OutgoingFile } from '../shared/media'
 import { looksLikeReplyCommand, parseReplyCommand } from '../shared/takeover'
 import { fmtMinutes, looksLikeBotsCommand, moderatorCommand, parseBotsCommand, stopMinutes } from '../shared/moderation'
 import type { IncomingMessage, MessageInfo, PeerInfo, SendMode, SentRecord, TgEvent, ToolResult, UiContact, UiModeration, UiPage, UiState } from '../shared/protocol'
 import { CHAT_KINDS, CHAT_TITLE_MAX, TOOLS, chatKindOf, isToolName, type ToolInput, type ToolName } from '../shared/tools'
-import { fieldName, inlineQuote, messageBody, oneLine, quoted } from '../shared/text'
+import { fieldName, inlineQuote, messageBody, oneLine, quoted, senderLabel } from '../shared/text'
 import { uiAway, type AwayResponder } from './away'
 import type { Approvals, CreateChatSpec, DecideOptions, PendingSend } from './approvals'
 import type { Pause, Pauses } from './moderation'
@@ -135,6 +135,18 @@ const CAPTION_MAX = 1024
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const fail = (text: string): ToolResult => ({ text, isError: true })
 
+/** Tools that send, edit, delete or create on Telegram: refused while config.json has not loaded since start. */
+const WRITE_TOOLS: ReadonlySet<ToolName> = new Set<ToolName>([
+  'telegram_send_message',
+  'telegram_send_file',
+  'telegram_send_sticker',
+  'telegram_edit_message',
+  'telegram_delete_message',
+  'telegram_create_topic',
+  'telegram_create_chat',
+  'telegram_confirm_send',
+])
+
 const KIND_HEADINGS = { private: 'Private chats', groups: 'Groups', channels: 'Channels', bots: 'Bots' } as const
 
 export function fmtPeer(p: PeerInfo): string {
@@ -149,9 +161,9 @@ function clip(s: string, n: number): string {
 }
 
 export function fmtMessage(m: MessageInfo): string {
-  // Anyone else carries their id, so a display name like "me" can't pass for the user's own messages.
-  // The name loses its own brackets, so "Leo (@leo, id 1)" can't show an id ahead of the real one.
-  const who = m.outgoing ? 'me' : m.from ? `${fieldName(m.from.name)} (${m.from.username ? `@${m.from.username}, ` : ''}id ${m.from.id})` : 'unknown'
+  // Anyone else starts with their id, before the name, so a display name like "me" can't pass for the
+  // user's own messages, and a name (which has no brackets of its own) can't show an id ahead of it.
+  const who = m.outgoing ? 'me' : m.from ? senderLabel(m.from.id, m.from.name, m.from.username) : 'unknown'
   const marks = [m.replyToId ? `reply to #${m.replyToId}` : null, m.topicId ? `topic ${m.topicId}` : null].filter(Boolean)
   // Every line of the text is quoted, so none of it can pass for the next message's line.
   return `#${m.id} ${m.date.slice(0, 16).replace('T', ' ')} ${who}${marks.length ? ` (${marks.join(', ')})` : ''}: ${quoted(messageBody(m.text, m.media, '[empty]'))}`
@@ -191,6 +203,11 @@ export class Service {
 
   get #mcpHome(): string {
     return this.d.mcpHome ?? join(homedir(), '.config', 'telegram-mcp')
+  }
+
+  /** files.protectedDirs entries worth a look (missing, a file, read differently): /status and telegram_status. */
+  protectedDirWarnings(): string[] {
+    return protectedDirWarnings(this.d.store.get().files.protectedDirs)
   }
 
   /** What checkSendable needs, with the owner's protected folders as config.json says now. */
@@ -237,6 +254,8 @@ export class Service {
       return this.decide(approvalId, approve, 'dialog', sessionId, { remember, nickname }).catch(e => fail(errText(e)))
     }
     if (!isToolName(method)) return fail(`Unknown tool: ${method}`)
+    const refused = WRITE_TOOLS.has(method) ? this.#writesRefused() : null
+    if (refused) return fail(refused)
     const parsed = TOOLS[method].input.safeParse(params ?? {})
     if (!parsed.success) return fail(`Invalid arguments:\n${z.prettifyError(parsed.error)}`)
     try {
@@ -245,6 +264,20 @@ export class Service {
     } catch (e) {
       return fail(errText(e))
     }
+  }
+
+  /**
+   * The refusal text while config.json has not loaded since start (ConfigStore.writesRefused), else
+   * null. Checked by the write tools up front and again where anything goes out to Telegram.
+   */
+  #writesRefused(): string | null {
+    const why = this.d.store.writesRefused()
+    return why ? `Refused: ${why}. Nothing is sent, edited, deleted or created until config.json loads; telegram_status shows the error.` : null
+  }
+
+  #assertWritable(): void {
+    const refused = this.#writesRefused()
+    if (refused) throw new Error(refused)
   }
 
   // ---- resolving chats -----------------------------------------------------------
@@ -279,7 +312,7 @@ export class Service {
       if (strict) throw new Error(`${msg} Not sending until it's confirmed: re-save it with telegram_save_chat (overwrite: true) if it's still the right person.`)
       warning = msg
     }
-    return { peer, nickname, entry, label: `${oneLine(peer.name)} [${nickname}]`, warning }
+    return { peer, nickname, entry, label: `${fieldName(peer.name)} [${nickname}]`, warning }
   }
 
   async #resolve(ref: ChatRef, strict: boolean): Promise<Target> {
@@ -293,11 +326,11 @@ export class Service {
       }
       case 'id': {
         const peer = await this.#peerById(r.id)
-        return { peer, label: oneLine(peer.name) }
+        return { peer, label: fieldName(peer.name) }
       }
       case 'username': {
         const peer = await this.d.tg.getPeer(r.username)
-        return { peer, label: `${oneLine(peer.name)} (@${peer.username ?? r.username})` }
+        return { peer, label: `${fieldName(peer.name)} (@${peer.username ?? r.username})` }
       }
       case 'unknown': {
         const hint = r.suggestions.length ? ` Close matches: ${r.suggestions.join('; ')}.` : ''
@@ -371,6 +404,8 @@ export class Service {
     countsAsSpeaking = true,
   ): Promise<MessageInfo> {
     const { tg } = this.d
+    const refused = this.#writesRefused()
+    if (refused) return Promise.reject(new Error(refused))
     const sending = sticker
       ? tg.sendSticker(chatId, sticker, opts)
       : file
@@ -481,6 +516,9 @@ export class Service {
     sessionId: string | null,
     opts: DecideOptions = {},
   ): Promise<ToolResult> {
+    // With no valid config.json since start, an approval is refused and the draft keeps waiting for it.
+    const refused = approve ? this.#writesRefused() : null
+    if (refused) return fail(refused)
     // A new chat is approved only in the menu bar or tray. Refused here without taking the draft, so
     // it keeps waiting there; dropping it (approve false) is fine from anywhere.
     const waiting = this.d.approvals.peek(id)
@@ -650,7 +688,7 @@ export class Service {
     // A fixed reply is not you speaking: it must not silence the away reply (R7).
     const sent = await this.#deliver(peer.id, footed, undefined, { replyTo: replyTo ?? undefined, parseMode: 'plain' }, undefined, false)
     const nickname = nicknameFor(config, peer.id)
-    this.#record({ chatId: peer.id, chatLabel: nickname ? `${oneLine(peer.name)} [${nickname}]` : oneLine(peer.name), text: footed, messageId: sent.id, via: 'auto', sessionLabel: 'pager' })
+    this.#record({ chatId: peer.id, chatLabel: nickname ? `${fieldName(peer.name)} [${nickname}]` : fieldName(peer.name), text: footed, messageId: sent.id, via: 'auto', sessionLabel: 'pager' })
   }
 
   /** How a page reached the phone, for the texts that answer telegram_page and page test. */
@@ -888,6 +926,8 @@ export class Service {
       approval: {
         id: pending.id,
         to: pending.chatLabel,
+        chatId: pending.chatId,
+        detail: pending.chatDetail,
         text: asked,
         reason: decision.reason,
         uiActive,
@@ -967,6 +1007,8 @@ export class Service {
         messageId: change.messageId,
         ...(edit ? { previousText: change.previousText } : {}),
         to: t.label,
+        chatId: pending.chatId,
+        detail: pending.chatDetail,
         text: change.text,
         reason,
         uiActive,
@@ -1043,6 +1085,7 @@ export class Service {
     }
     let chat: PeerInfo
     try {
+      this.#assertWritable()
       chat = await this.d.tg.createChat({ type: spec.type, title: spec.title, description: spec.description })
     } catch (e) {
       this.d.log?.(`create chat failed after approval: ${what}: ${errText(e)}`)
@@ -1095,6 +1138,7 @@ export class Service {
    * so an edit is never mistaken for what went out.
    */
   async #applyEdit(by: string, chatId: number, messageId: number, text: string, parseMode: 'plain' | 'markdown' | 'html'): Promise<MessageInfo> {
+    this.#assertWritable()
     const edited = await this.d.tg.editMessage(chatId, messageId, text, { parseMode })
     const at = new Date().toISOString()
     this.#recent = this.#recent.map(r =>
@@ -1108,6 +1152,7 @@ export class Service {
 
   /** It is gone from the chat, so it leaves Recently sent too; daemon.log keeps a line for it. */
   async #applyDelete(chatId: number, messageId: number): Promise<void> {
+    this.#assertWritable()
     await this.d.tg.deleteMessage(chatId, messageId)
     this.#recent = this.#recent.filter(r => !(r.chatId === chatId && r.messageId === messageId))
     this.#ownSent.delete(`${chatId}:${messageId}`)
@@ -1196,7 +1241,7 @@ export class Service {
     const footed = withFooter(text, config.footer)
     const sent = await this.#deliver(chatId, footed, undefined, { replyTo, parseMode: 'plain' }, undefined, false)
     const nickname = nicknameFor(config, chatId)
-    this.#record({ chatId, chatLabel: nickname ? `${oneLine(peer.name)} [${nickname}]` : oneLine(peer.name), text: footed, messageId: sent.id, via: 'auto', sessionLabel: 'moderation' })
+    this.#record({ chatId, chatLabel: nickname ? `${fieldName(peer.name)} [${nickname}]` : fieldName(peer.name), text: footed, messageId: sent.id, via: 'auto', sessionLabel: 'moderation' })
   }
 
   /**
@@ -1343,6 +1388,13 @@ export class Service {
       ]
       if (st.lastError && st.phase !== 'connected') lines.push(`Last error: ${st.lastError}`)
       lines.push(`Config: ${store.path}${store.error() ? `\n  ${store.error()}` : ''}`)
+      const dirs = store.get().files.protectedDirs
+      if (dirs.length) {
+        const warnings = this.protectedDirWarnings()
+        lines.push(`Protected folders (files.protectedDirs): ${dirs.length}${warnings.length ? `, with warnings:` : ''}`)
+        for (const w of warnings) lines.push(`  warning: ${w}`)
+      }
+      if (store.writesRefused()) lines.push('Writes: REFUSED (no valid config.json since the daemon started). Reading still works; fix config.json and it reloads by itself.')
       const watches = hub.watches(sid)
       lines.push(`This session: ${sid}`)
       lines.push(
@@ -1570,6 +1622,7 @@ export class Service {
           `No topic created in ${t.label}: ${decision.reason}. Topics are only created where sending is automatic; ask the user to create it, or to put this chat on autoSend.`,
         )
       }
+      this.#assertWritable()
       const topic = await this.d.tg.createTopic(t.peer.id, p.title)
       this.d.log?.(`create topic: "${p.title}" (${topic.id}) in ${t.label} (${t.peer.id}) by ${this.d.hub.label(sid)}`)
       return { text: `Created topic "${p.title}" in ${t.label}: topic id ${topic.id}. Allowed because ${decision.reason}.` }
