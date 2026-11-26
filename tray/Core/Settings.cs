@@ -3,7 +3,7 @@ using System.Globalization;
 namespace TelegramMCPTray.Core;
 
 /// <summary>
-/// Where the daemon is and how to read its token: the same TELEGRAM_MCP_HOME, TELEGRAM_MCP_PORT and
+/// Where the daemon is and how to read the apps' token (secret "ui-token"): the same TELEGRAM_MCP_HOME, TELEGRAM_MCP_PORT and
 /// TELEGRAM_MCP_SECRET_STORE the CLI and the daemon use (src/shared/paths.ts, secrets.ts). Arguments
 /// (--home, --port, --secret-store) win, because the Run key that starts the app at login can't set
 /// environment variables.
@@ -38,14 +38,17 @@ public sealed record Settings(string Home, int Port, bool FileSecrets, string De
         return full.Length > root.Length ? full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) : full;
     }
 
+    /// <summary>The secret this app reads: the menu bar and tray apps' own token, not the sessions' "token".</summary>
+    public const string UiTokenName = "ui-token";
+
     /// <summary>
     /// The Credential Manager entry. Bun.secrets writes a generic credential named "service/name";
-    /// the name is "token" for the default home and "token@&lt;home&gt;" for any other (keychainAccount).
+    /// the name is "ui-token" for the default home and "ui-token@&lt;home&gt;" for any other (keychainAccount).
     /// </summary>
-    public string TokenTarget => "telegram-mcp/" + (string.Equals(Home, DefaultHome, StringComparison.Ordinal) ? "token" : $"token@{Home}");
+    public string UiTokenTarget => "telegram-mcp/" + (string.Equals(Home, DefaultHome, StringComparison.Ordinal) ? UiTokenName : $"{UiTokenName}@{Home}");
 
     /// <summary>With TELEGRAM_MCP_SECRET_STORE=file the token is this plain file.</summary>
-    public string TokenFile => Path.Combine(Home, "token");
+    public string UiTokenFile => Path.Combine(Home, UiTokenName);
 
     /// <summary>The arguments that start the app with these settings (for the Run key).</summary>
     public IReadOnlyList<string> LaunchArgs()

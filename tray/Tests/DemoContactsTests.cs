@@ -11,7 +11,7 @@ public class DemoContactsTests(DemoDaemon demo) : IClassFixture<DemoDaemon>
 {
     static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    DaemonApi Api() => new(new HttpClient(), demo.Port, new FileTokenSource(Path.Combine(demo.Home, "token")));
+    DaemonApi Api() => new(new HttpClient(), demo.Port, new FileTokenSource(Path.Combine(demo.Home, "ui-token")));
 
     static UiContact Find(UiState s, string nickname) => s.Contacts!.Single(c => c.Nickname == nickname);
 

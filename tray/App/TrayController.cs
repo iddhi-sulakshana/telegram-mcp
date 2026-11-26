@@ -25,7 +25,7 @@ sealed class TrayController : IDisposable
     public TrayController(Settings settings)
     {
         _alarm = new PageAlarm(settings.Home);
-        ITokenSource tokens = settings.FileSecrets ? new FileTokenSource(settings.TokenFile) : new CredentialTokenSource(settings.TokenTarget);
+        ITokenSource tokens = settings.FileSecrets ? new FileTokenSource(settings.UiTokenFile) : new CredentialTokenSource(settings.UiTokenTarget);
         _vm = new PanelViewModel(new DaemonApi(new HttpClient(), settings.Port, tokens), settings);
         _panel = new PanelWindow { DataContext = _vm };
         _toasts = new Toasts(IconRenderer.NotificationLogo());

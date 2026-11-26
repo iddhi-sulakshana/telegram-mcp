@@ -23,10 +23,10 @@ public class SettingsTests
     }
 
     [Fact]
-    public void Default_home_reads_the_bare_token_credential()
+    public void Default_home_reads_the_bare_ui_token_credential()
     {
         // Bun.secrets on Windows writes the generic credential "<service>/<name>".
-        Assert.Equal("telegram-mcp/token", Settings.Load([], Env(), Profile).TokenTarget);
+        Assert.Equal("telegram-mcp/ui-token", Settings.Load([], Env(), Profile).UiTokenTarget);
     }
 
     [Fact]
@@ -34,7 +34,7 @@ public class SettingsTests
     {
         var s = Settings.Load([], Env(("TELEGRAM_MCP_HOME", OtherHome)), Profile);
 
-        Assert.Equal($"telegram-mcp/token@{OtherHome}", s.TokenTarget);
+        Assert.Equal($"telegram-mcp/ui-token@{OtherHome}", s.UiTokenTarget);
     }
 
     [Fact]
@@ -43,8 +43,8 @@ public class SettingsTests
         var withSlash = Settings.Load([], Env(("TELEGRAM_MCP_HOME", DefaultHome + Path.DirectorySeparatorChar)), Profile);
         var other = Settings.Load([], Env(("TELEGRAM_MCP_HOME", OtherHome + Path.DirectorySeparatorChar)), Profile);
 
-        Assert.Equal("telegram-mcp/token", withSlash.TokenTarget);
-        Assert.Equal($"telegram-mcp/token@{OtherHome}", other.TokenTarget);
+        Assert.Equal("telegram-mcp/ui-token", withSlash.UiTokenTarget);
+        Assert.Equal($"telegram-mcp/ui-token@{OtherHome}", other.UiTokenTarget);
     }
 
     [Fact]
@@ -52,7 +52,7 @@ public class SettingsTests
     {
         var s = Settings.Load([], Env(("TELEGRAM_MCP_HOME", OtherHome)), Profile);
 
-        Assert.Equal(Path.Combine(OtherHome, "token"), s.TokenFile);
+        Assert.Equal(Path.Combine(OtherHome, "ui-token"), s.UiTokenFile);
     }
 
     [Fact]

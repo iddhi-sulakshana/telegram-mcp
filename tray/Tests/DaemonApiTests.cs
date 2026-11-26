@@ -89,6 +89,25 @@ public class DaemonApiTests
     }
 
     [Fact]
+    public async Task A_token_for_other_routes_says_to_update_together_and_is_read_again()
+    {
+        _net.Answer(HttpStatusCode.Forbidden, "forbidden: this token is not for this route\n")
+            .Answer(HttpStatusCode.Forbidden, "forbidden: this token is not for this route\n")
+            .Answer(HttpStatusCode.OK, StateJson);
+        var tokens = new FakeTokens(new TokenRead("sessions-token", null, TimeSpan.Zero), new TokenRead("sessions-token", null, TimeSpan.Zero), Good);
+        var api = Api(tokens);
+
+        var polled = await api.PollAsync(Ct);
+        var posted = await api.DecideAsync("a_1", new Decision(true), Ct);
+        var ok = await api.PollAsync(Ct);
+
+        Assert.Equal(DaemonApi.WrongToken, polled.Problem);
+        Assert.Equal(new ActionResult(false, DaemonApi.WrongToken), posted);
+        Assert.True(ok.Reachable);
+        Assert.Equal(3, tokens.Reads);
+    }
+
+    [Fact]
     public async Task Avatar_asks_for_that_chat_with_the_token()
     {
         _net.Answer(HttpStatusCode.OK, "PHOTO");
