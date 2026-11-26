@@ -54,6 +54,7 @@ export async function createDaemon(o: DaemonOptions) {
   const hub = new SessionHub({
     log,
     deskFor: chat => deskOf(store.get(), chat),
+    deskConfigured: name => Object.hasOwn(store.get().desks, name),
     desks: new DeskStore(join(o.paths.home, 'desks.json'), log),
     ...o.hub,
   })

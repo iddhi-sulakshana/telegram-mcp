@@ -44,6 +44,8 @@ export interface HubOptions {
   desks?: DeskStore
   /** A desk's queue holds more than an ordinary session's: it is the one place its chats are heard. */
   deskMaxQueue?: number
+  /** Whether config.json still lists this desk. One it doesn't is not restored, and is swept like an ordinary session. */
+  deskConfigured?: (name: string) => boolean
 }
 
 /**
@@ -74,6 +76,7 @@ export class SessionHub {
   readonly #deskFor: (chat: { id: number; username?: string | null }) => string | null
   readonly #desks: DeskStore | null
   readonly #deskMaxQueue: number
+  readonly #deskConfigured: (name: string) => boolean
   /** A desk's state changed since desks.json was last written. */
   #dirty = false
   #seq = 0
@@ -90,8 +93,14 @@ export class SessionHub {
     this.#deskFor = opts.deskFor ?? (() => null)
     this.#desks = opts.desks ?? null
     this.#deskMaxQueue = opts.deskMaxQueue ?? 1000
+    this.#deskConfigured = opts.deskConfigured ?? (() => true)
     // Desks known from before a restart: their watches apply, and their queue fills, before any proxy is back.
     for (const [desk, d] of this.#desks?.load() ?? []) {
+      // A desk taken out of config.json since is dropped, with its queue (desks.json is rewritten on the next change).
+      if (!this.#deskConfigured(desk)) {
+        this.#dirty = true
+        continue
+      }
       const s = this.#ensure(deskSessionId(desk), d.label || deskSessionId(desk))
       s.desk = desk
       s.holderStartedAt = d.holder
@@ -541,19 +550,24 @@ export class SessionHub {
     return delivered
   }
 
-  /** Forgets sessions whose proxy has been gone longer than the grace period. A desk is kept: its next proxy picks it up. */
+  /**
+   * Forgets sessions whose proxy has been gone longer than the grace period. A desk config.json lists
+   * is kept (its next proxy picks it up); one taken out of config.json goes like an ordinary session.
+   */
   sweep(): string[] {
     const gone: string[] = []
     const now = this.#now()
     for (const s of this.#sessions.values()) {
-      if (s.desk !== null) continue
+      if (s.desk !== null && this.#deskConfigured(s.desk)) continue
       if (s.proxy === null && s.disconnectedAt !== null && now - s.disconnectedAt > this.#graceMs) {
         for (const m of s.monitors) (m as { close?: () => void }).close?.()
         this.#sessions.delete(s.id)
         this.setReplyHandler(s.id, false)
+        if (s.desk !== null) this.#dirty = true
         gone.push(s.id)
       }
     }
+    this.#save()
     return gone
   }
 

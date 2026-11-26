@@ -267,8 +267,18 @@ export function startServer(o: ServerOptions) {
           return
         }
         if (msg.t === 'hello') {
-          // A proxy started with --desk speaks as the desk's one session; a name that isn't valid is ignored.
-          const desk = deskName(msg.desk)
+          // A proxy started with --desk speaks as the desk's one session; a name that isn't valid, or
+          // that config.json doesn't list, is ignored.
+          let desk = deskName(msg.desk)
+          if (desk && !Object.hasOwn(o.store.get().desks, desk)) {
+            o.log(`session ${msg.sessionId} asked for desk "${desk}", which config.json doesn't list: an ordinary session`)
+            desk = null
+          }
+          // Without a desk, only an ordinary session's id (a desk's d_ id comes only from --desk).
+          if (!desk && (typeof msg.sessionId !== 'string' || !/^s_[a-z0-9]{8}$/.test(msg.sessionId))) {
+            ws.close(1008, 'bad session id')
+            return
+          }
           const sid = desk ? deskSessionId(desk) : msg.sessionId
           ws.data.sessionId = sid
           const startedAt = typeof msg.startedAt === 'number' && Number.isFinite(msg.startedAt) ? msg.startedAt : 0

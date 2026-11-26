@@ -344,6 +344,37 @@ describe('SessionHub', () => {
         expect(hub.lastSeen('d_desk', -6)).toBeNull()
       })
 
+      test('a desk taken out of config.json is not restored, and is forgotten once its proxy is gone', () => {
+        const file = path()
+        let configured = ['desk', 'old']
+        const deskConfigured = (name: string) => configured.includes(name)
+        const first = new SessionHub({ deskFor, desks: new DeskStore(file), deskConfigured })
+        for (const desk of ['desk', 'old']) {
+          first.attachProxy(`d_${desk}`, { label: desk, channel: false, watches: [], desk }, sink())
+          first.addWatch(`d_${desk}`, { chatId: -5, chatLabel: 'g' })
+        }
+        configured = ['desk']
+        const second = new SessionHub({ deskFor, desks: new DeskStore(file), deskConfigured })
+        expect(second.has('d_desk')).toBe(true)
+        expect(second.has('d_old')).toBe(false)
+
+        let now = 0
+        const third = new SessionHub({ deskFor, desks: new DeskStore(file), deskConfigured: () => true, graceMs: 1000, now: () => now })
+        const p = sink()
+        third.attachProxy('d_gone', { label: 'g', channel: false, watches: [], desk: 'gone' }, p)
+        third.detachProxy('d_gone', p)
+        now = 10_000
+        // Still configured: kept. Taken out: swept like an ordinary session, and gone from desks.json.
+        expect(third.sweep()).toEqual([])
+        const fourth = new SessionHub({ deskFor, desks: new DeskStore(file), deskConfigured: name => name !== 'gone', graceMs: 1000, now: () => now })
+        const p2 = sink()
+        fourth.attachProxy('d_gone', { label: 'g', channel: false, watches: [], desk: 'gone' }, p2)
+        fourth.detachProxy('d_gone', p2)
+        now = 20_000
+        expect(fourth.sweep()).toEqual(['d_gone'])
+        expect(new SessionHub({ deskFor, desks: new DeskStore(file) }).has('d_gone')).toBe(false)
+      })
+
       test('ordinary sessions are not written to disk', () => {
         const file = path()
         const hub = new SessionHub({ deskFor, desks: new DeskStore(file) })

@@ -263,6 +263,28 @@ describe('desk sessions through the daemon', () => {
     expect(after.events.map(e => e.text)).toEqual(['missed'])
   })
 
+  test('a desk that config.json does not list is ignored: the proxy is an ordinary session', async () => {
+    const { daemon } = await start()
+    const other = await connect(daemon, { sessionId: 's_othernm1', desk: 'other' })
+    const status = (await other.client.call('telegram_status', {})).result.text
+    expect(status).toContain('This session: s_othernm1')
+    expect(status).not.toContain('Desk:')
+    expect(daemon.hub.has('d_other')).toBe(false)
+  })
+
+  test("a hello that names a desk's session id, or any odd id, without --desk is turned away", async () => {
+    const { daemon } = await start()
+    for (const sessionId of ['d_desk', 'anything', 's_TOOLONG123']) {
+      const ws = new WebSocket(`ws://127.0.0.1:${daemon.port}/bridge`, { headers: { authorization: `Bearer ${daemon.token}` } } as never)
+      const closed = new Promise<number>(resolve => (ws.onclose = e => resolve(e.code)))
+      await new Promise(resolve => (ws.onopen = resolve))
+      ws.send(JSON.stringify({ t: 'hello', sessionId, label: 'x', channel: false, watches: [] }))
+      expect(await closed).toBe(1008)
+    }
+    expect(daemon.hub.has('d_desk')).toBe(false)
+    expect(daemon.hub.has('anything')).toBe(false)
+  })
+
   test('a desk name that is not valid is ignored: the proxy is an ordinary session', async () => {
     const { daemon } = await start()
     const odd = await connect(daemon, { sessionId: 's_oddname1', desk: 'Not A Desk' })
