@@ -8,6 +8,7 @@ import { Approvals } from './approvals'
 import { Pauses } from './moderation'
 import { moderatorCommand } from '../shared/moderation'
 import { AvatarCache } from './avatars'
+import { DeskStore } from './desk-store'
 import { AwayResponder } from './away'
 import { PageBot } from './page-bot'
 import { Pager, pageTrigger } from './pager'
@@ -49,7 +50,13 @@ export async function createDaemon(o: DaemonOptions) {
       loadCredentials: () => loadCredentials(secrets),
       log,
     })
-  const hub = new SessionHub({ log, deskFor: chat => deskOf(store.get(), chat), ...o.hub })
+  // Desks (config.json "desks") keep their watches and undelivered messages in desks.json across restarts.
+  const hub = new SessionHub({
+    log,
+    deskFor: chat => deskOf(store.get(), chat),
+    desks: new DeskStore(join(o.paths.home, 'desks.json'), log),
+    ...o.hub,
+  })
   const approvals = new Approvals()
 
   // Pages ring the menu bar / tray (they read them from /ui/state) and, with a pager bot, the phone.

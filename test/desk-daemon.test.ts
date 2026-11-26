@@ -21,8 +21,8 @@ afterEach(async () => {
   for (const c of cleanup.splice(0).reverse()) await c()
 })
 
-async function start(config: unknown = CONFIG) {
-  const paths = getPaths(mkdtempSync(join(tmpdir(), 'tgmcp-desk-')))
+async function start(config: unknown = CONFIG, home = mkdtempSync(join(tmpdir(), 'tgmcp-desk-'))) {
+  const paths = getPaths(home)
   writeFileSync(paths.config, JSON.stringify(config))
   const tg = new FakeTelegram().add(LEO, ANNA)
   const daemon: Daemon = await createDaemon({ paths, port: 0, telegram: tg, log: () => {}, pageBotToken: null })
@@ -128,6 +128,30 @@ describe('desk sessions through the daemon', () => {
       expect(r.isError).toBe(true)
       expect(r.text).toContain('desk "desk"')
     }
+  })
+
+  test('a daemon restart loses no desk message and delivers none twice', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'tgmcp-desk-restart-'))
+    const a = await start(CONFIG, home)
+    const before = await connect(a.daemon, { sessionId: 's_deskone1', desk: 'desk' })
+    await before.client.call('telegram_watch', { chat: 'leo' })
+    // The Claude session goes away (a restart, /mcp), then a message comes in.
+    before.client.close()
+    await settle()
+    a.tg.emit(LEO.id, 'while the session was away', LEO.id, { id: 2001 })
+    await a.daemon.stop()
+
+    const b = await start(CONFIG, home)
+    // Telegram's catch-up runs as soon as the daemon starts, before any proxy is back.
+    b.tg.emit(LEO.id, 'while the daemon was down', LEO.id, { id: 2002 })
+    const after = await connect(b.daemon, { sessionId: 's_desktwo2', desk: 'desk' })
+    await settle()
+    expect(after.events.map(e => e.text)).toEqual(['while the session was away', 'while the daemon was down'])
+    // The same message again (a replayed update) is not delivered twice.
+    b.tg.emit(LEO.id, 'while the daemon was down', LEO.id, { id: 2002 })
+    b.tg.emit(LEO.id, 'new', LEO.id, { id: 2003 })
+    await settle()
+    expect(after.events.map(e => e.text)).toEqual(['while the session was away', 'while the daemon was down', 'new'])
   })
 
   test('a desk name that is not valid is ignored: the proxy is an ordinary session', async () => {

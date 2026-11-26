@@ -1,4 +1,5 @@
 import { deskSessionId } from '../shared/desks'
+import type { DeskState, DeskStore } from './desk-store'
 import type { IncomingMessage, ServerMessage, TgEvent, WatchSpec } from '../shared/protocol'
 import { fieldName, messageBody, quoted, senderLabel } from '../shared/text'
 
@@ -18,6 +19,8 @@ interface Session {
   disconnectedAt: number | null
   /** The desk this session holds (its id is then deskSessionId(desk)), or null for an ordinary session. */
   desk: string | null
+  /** A desk's newest message id handed over per chat, so a replayed message isn't handed over twice. */
+  seen: Map<number, number>
 }
 
 export interface HubOptions {
@@ -28,6 +31,10 @@ export interface HubOptions {
   log?: (msg: string) => void
   /** The desk that owns a chat (config.json "desks"), or null. None by default. */
   deskFor?: (chat: { id: number; username?: string | null }) => string | null
+  /** Keeps each desk's watches, queue and last-seen ids on disk (desks.json), so a daemon restart loses nothing. */
+  desks?: DeskStore
+  /** A desk's queue holds more than an ordinary session's: it is the one place its chats are heard. */
+  deskMaxQueue?: number
 }
 
 /**
@@ -56,6 +63,10 @@ export class SessionHub {
   readonly #now: () => number
   readonly #log: (msg: string) => void
   readonly #deskFor: (chat: { id: number; username?: string | null }) => string | null
+  readonly #desks: DeskStore | null
+  readonly #deskMaxQueue: number
+  /** A desk's state changed since desks.json was last written. */
+  #dirty = false
   #seq = 0
   /** Sessions that answer "/reply", most recently enabled last. */
   #handlers: string[] = []
@@ -68,6 +79,45 @@ export class SessionHub {
     this.#now = opts.now ?? Date.now
     this.#log = opts.log ?? (() => {})
     this.#deskFor = opts.deskFor ?? (() => null)
+    this.#desks = opts.desks ?? null
+    this.#deskMaxQueue = opts.deskMaxQueue ?? 1000
+    // Desks known from before a restart: their watches apply, and their queue fills, before any proxy is back.
+    for (const [desk, d] of this.#desks?.load() ?? []) {
+      const s = this.#ensure(deskSessionId(desk), d.label || deskSessionId(desk))
+      s.desk = desk
+      for (const w of d.watches) s.watches.set(w.id, w)
+      s.queue = d.queue
+      s.dropped = d.dropped
+      for (const [chatId, id] of Object.entries(d.seen)) s.seen.set(Number(chatId), id)
+      this.#seq = Math.max(this.#seq, ...d.queue.map(e => e.seq))
+    }
+  }
+
+  /** Writes desks.json when a desk's state changed. Called at the end of each public change. */
+  #save(): void {
+    if (!this.#dirty || !this.#desks) return
+    this.#dirty = false
+    const out = new Map<string, DeskState>()
+    for (const s of this.#sessions.values()) {
+      if (s.desk === null) continue
+      out.set(s.desk, {
+        label: s.label,
+        watches: [...s.watches.values()],
+        queue: s.queue,
+        dropped: s.dropped,
+        seen: Object.fromEntries([...s.seen].map(([chatId, id]) => [String(chatId), id])),
+      })
+    }
+    this.#desks.save(out)
+  }
+
+  #touch(s: Session): void {
+    if (s.desk !== null) this.#dirty = true
+  }
+
+  /** The newest message id this chat handed to the desk session, or null. */
+  lastSeen(id: string, chatId: number): number | null {
+    return this.#sessions.get(id)?.seen.get(chatId) ?? null
   }
 
   #ensure(id: string, label = id): Session {
@@ -84,6 +134,7 @@ export class SessionHub {
         dropped: 0,
         disconnectedAt: this.#now(),
         desk: null,
+        seen: new Map(),
       }
       this.#sessions.set(id, s)
     }
@@ -115,6 +166,7 @@ export class SessionHub {
       this.#syncWatches(s)
     }
     this.#flush(s)
+    this.#save()
   }
 
   /**
@@ -151,6 +203,7 @@ export class SessionHub {
     const s = this.#ensure(id)
     s.monitors.add(sink)
     this.#flush(s)
+    this.#save()
   }
 
   label(id: string): string {
@@ -239,9 +292,16 @@ export class SessionHub {
   drain(id: string): { events: TgEvent[]; dropped: number } {
     const s = this.#sessions.get(id)
     if (!s) return { events: [], dropped: 0 }
+    const out = this.#take(s)
+    this.#save()
+    return out
+  }
+
+  #take(s: Session): { events: TgEvent[]; dropped: number } {
     const out = { events: s.queue, dropped: s.dropped }
     s.queue = []
     s.dropped = 0
+    this.#touch(s)
     return out
   }
 
@@ -292,6 +352,7 @@ export class SessionHub {
     if (!s) return null
     this.#takeovers.set(chatId, { sessionId: s.id, until: this.#now() + ttlMs })
     this.#deliver(s, { ...event, seq: ++this.#seq, watchIds: ['takeover'] })
+    this.#save()
     return s.id
   }
 
@@ -302,6 +363,7 @@ export class SessionHub {
     this.#takeovers.delete(chatId)
     const s = this.#sessions.get(t.sessionId)
     if (s) this.#deliver(s, { ...event, seq: ++this.#seq, watchIds: ['takeover'] })
+    this.#save()
     return t.sessionId
   }
 
@@ -344,6 +406,7 @@ export class SessionHub {
       const s = this.#sessions.get(id)
       if (s) this.#deliver(s, { ...event, seq: ++this.#seq, watchIds: ['moderation'] })
     }
+    this.#save()
     return [...told]
   }
 
@@ -367,10 +430,18 @@ export class SessionHub {
       const ids = hits.map(w => w.id)
       if (takenBy === s.id) ids.push('takeover')
       if (ids.length === 0) continue
+      if (s.desk !== null) {
+        // Telegram's catch-up (or the history catch-up) can hand over a message the desk already has.
+        const seen = s.seen.get(msg.chatId)
+        if (seen !== undefined && msg.id <= seen) continue
+        s.seen.set(msg.chatId, msg.id)
+        this.#touch(s)
+      }
       const event: TgEvent = { ...describe(msg), seq: ++this.#seq, watchIds: ids }
       this.#deliver(s, event)
       delivered++
     }
+    this.#save()
     return delivered
   }
 
@@ -420,22 +491,25 @@ export class SessionHub {
       if (sent) return
     }
     s.queue.push(event)
-    if (s.queue.length > this.#maxQueue) {
+    if (s.queue.length > (s.desk !== null ? this.#deskMaxQueue : this.#maxQueue)) {
       s.queue.shift()
       s.dropped++
     }
+    this.#touch(s)
   }
 
   #flush(s: Session) {
     if (s.queue.length === 0) return
     if (!(s.channel && s.proxy) && s.monitors.size === 0) return
-    const { events, dropped } = this.drain(s.id)
+    const { events, dropped } = this.#take(s)
     if (dropped > 0) this.#log(`session ${s.id}: ${dropped} watched messages were dropped while nobody was listening`)
     for (const e of events) this.#deliver(s, e)
   }
 
   #syncWatches(s: Session) {
     s.proxy?.send(JSON.stringify({ t: 'watches', watches: [...s.watches.values()] } satisfies ServerMessage))
+    this.#touch(s)
+    this.#save()
   }
 }
 

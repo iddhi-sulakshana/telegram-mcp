@@ -1,4 +1,8 @@
 import { describe, expect, test } from 'bun:test'
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { DeskStore } from '../src/daemon/desk-store'
 import { SessionHub } from '../src/daemon/sessions'
 import type { IncomingMessage, TgEvent } from '../src/shared/protocol'
 
@@ -228,6 +232,75 @@ describe('SessionHub', () => {
       expect(hub.startTakeover(-5, 60_000, base)).toBe('d_desk')
       // Other chats still go to the /reply handler.
       expect(hub.startTakeover(-6, 60_000, { ...base, chatId: -6 })).toBe('s1')
+    })
+
+    describe('on disk', () => {
+      const path = () => join(mkdtempSync(join(tmpdir(), 'tgmcp-desks-')), 'desks.json')
+
+      test("a restarted daemon knows the desk's watches before its proxy is back, and queues for it", () => {
+        const file = path()
+        const first = new SessionHub({ deskFor, desks: new DeskStore(file) })
+        first.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk' }, sink())
+        first.addWatch('d_desk', { chatId: -5, chatLabel: 'g' })
+        first.dispatch(msg(-5, 7, 'before the restart'), describeMsg)
+
+        const second = new SessionHub({ deskFor, desks: new DeskStore(file) })
+        expect(second.isWatching('d_desk', -5)).toBe(true)
+        expect(second.deskOf('d_desk')).toBe('desk')
+        expect(second.dispatch(msg(-5, 7, 'during the restart'), describeMsg)).toBe(1)
+
+        const third = new SessionHub({ deskFor, desks: new DeskStore(file) })
+        const monitor = sink()
+        third.attachProxy('d_desk', { label: 'b2', channel: false, watches: [], desk: 'desk' }, sink())
+        third.attachMonitor('d_desk', monitor)
+        expect(monitor.got.map(f => f.split('\n').at(-1))).toEqual(['> before the restart', '> during the restart'])
+        expect(third.pending('d_desk')).toBe(0)
+        // Delivered is gone from disk too.
+        expect(new SessionHub({ deskFor, desks: new DeskStore(file) }).pending('d_desk')).toBe(0)
+      })
+
+      test('a message the desk already got is not delivered twice (a catch-up replay)', () => {
+        const file = path()
+        const first = new SessionHub({ deskFor, desks: new DeskStore(file) })
+        first.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk' }, sink())
+        first.addWatch('d_desk', { chatId: -5, chatLabel: 'g' })
+        const m = msg(-5, 7, 'once')
+        expect(first.dispatch(m, describeMsg)).toBe(1)
+        expect(first.dispatch(m, describeMsg)).toBe(0)
+        const second = new SessionHub({ deskFor, desks: new DeskStore(file) })
+        expect(second.dispatch(m, describeMsg)).toBe(0)
+        expect(second.lastSeen('d_desk', -5)).toBe(m.id)
+        expect(second.pending('d_desk')).toBe(1)
+      })
+
+      test('ordinary sessions are not written to disk', () => {
+        const file = path()
+        const hub = new SessionHub({ deskFor, desks: new DeskStore(file) })
+        hub.attachProxy('s1', { label: 'a', channel: false, watches: [] }, sink())
+        hub.addWatch('s1', { chatId: -6, chatLabel: 'h' })
+        expect(new SessionHub({ deskFor, desks: new DeskStore(file) }).has('s1')).toBe(false)
+      })
+
+      test('a broken desks.json is set aside and the daemon starts with no desk state', () => {
+        const file = path()
+        writeFileSync(file, '{ not json')
+        const logs: string[] = []
+        const hub = new SessionHub({ deskFor, desks: new DeskStore(file, m => logs.push(m)) })
+        expect(hub.has('d_desk')).toBe(false)
+        expect(logs.some(l => l.includes('desks.json'))).toBe(true)
+        expect(existsSync(`${file}.bad`)).toBe(true)
+      })
+
+      test("a desk's queue on disk is bounded too", () => {
+        const file = path()
+        const hub = new SessionHub({ deskFor, desks: new DeskStore(file), deskMaxQueue: 2 })
+        hub.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk' }, sink())
+        hub.addWatch('d_desk', { chatId: -5, chatLabel: 'g' })
+        for (const t of ['a', 'b', 'c']) hub.dispatch(msg(-5, 7, t), describeMsg)
+        const { events, dropped } = new SessionHub({ deskFor, desks: new DeskStore(file) }).drain('d_desk')
+        expect(events.map(e => e.text)).toEqual(['b', 'c'])
+        expect(dropped).toBe(1)
+      })
     })
 
     test('a desk session is never swept', () => {
