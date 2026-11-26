@@ -3,6 +3,9 @@ import type { DeskState, DeskStore } from './desk-store'
 import type { IncomingMessage, ServerMessage, TgEvent, WatchSpec } from '../shared/protocol'
 import { fieldName, messageBody, quoted, senderLabel } from '../shared/text'
 
+/** A chat as a desk can list it: its marked id, and its @username when known. */
+type ChatKey = { id: number; username?: string | null }
+
 export interface Sink {
   send(data: string): unknown
 }
@@ -325,9 +328,12 @@ export class SessionHub {
    * True when a Claude session would see a message on this chat now: it is taken over, or a watching
    * session is reachable. On a desk's chat only the desk's session counts.
    */
-  handledLive(chatId: number): boolean {
+  handledLive(chat: number | ChatKey): boolean {
+    const key = typeof chat === 'number' ? { id: chat } : chat
+    const chatId = key.id
     if (this.takeoverOf(chatId) !== null) return true
-    const desk = this.#deskFor({ id: chatId })
+    // The whole key: a desk may list the chat by @username.
+    const desk = this.#deskFor(key)
     return [...this.#sessions.values()].some(
       s => (desk === null || s.desk === desk) && this.#reachable(s) && [...s.watches.values()].some(w => w.chatId === chatId),
     )
@@ -399,8 +405,10 @@ export class SessionHub {
    * Hand a chat to the live handler for `ttlMs` and tell it why. Null when no session can take it.
    * A desk's chat goes to the desk's session (it owns the chat), never to another handler.
    */
-  startTakeover(chatId: number, ttlMs: number, event: Omit<TgEvent, 'seq' | 'watchIds'>): string | null {
-    const desk = this.#deskFor({ id: chatId })
+  startTakeover(chat: number | ChatKey, ttlMs: number, event: Omit<TgEvent, 'seq' | 'watchIds'>): string | null {
+    const key = typeof chat === 'number' ? { id: chat } : chat
+    const chatId = key.id
+    const desk = this.#deskFor(key)
     const s = desk !== null ? this.#liveDesk(desk) : this.#liveHandler()
     if (!s) return null
     this.#takeovers.set(chatId, { sessionId: s.id, until: this.#now() + ttlMs })

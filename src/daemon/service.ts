@@ -450,7 +450,7 @@ export class Service {
       sid = null
     } else {
       const minutes = this.d.takeoverMinutes ?? 120
-      sid = hub.startTakeover(msg.chatId, minutes * 60_000, { ...base, takeover: { action: 'start', instruction: cmd.instruction, minutes } })
+      sid = hub.startTakeover(msg.chat, minutes * 60_000, { ...base, takeover: { action: 'start', instruction: cmd.instruction, minutes } })
     }
     if (sid) await tg.deleteMessage(msg.chatId, msg.id).catch(() => {})
     return true

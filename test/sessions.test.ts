@@ -340,6 +340,23 @@ describe('SessionHub', () => {
       })
     })
 
+    test('a desk chat listed by @username: /reply and handledLive find the desk too', () => {
+      const byName = (chat: { id: number; username?: string | null }) => (chat.username === 'anna_k' ? 'desk' : null)
+      const hub = new SessionHub({ deskFor: byName })
+      const anna = { id: 77, username: 'anna_k' }
+      hub.attachProxy('s1', { label: 'a', channel: false, watches: [] }, sink())
+      hub.addWatch('s1', { chatId: 77, chatLabel: 'Anna' })
+      hub.attachMonitor('s1', sink())
+      hub.setReplyHandler('s1', true)
+      expect(hub.handledLive(anna)).toBe(false)
+      expect(hub.startTakeover(anna, 60_000, { ...base, chatId: 77 })).toBeNull()
+      hub.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk' }, sink())
+      hub.addWatch('d_desk', { chatId: 77, chatLabel: 'Anna' })
+      hub.attachMonitor('d_desk', sink())
+      expect(hub.handledLive(anna)).toBe(true)
+      expect(hub.startTakeover(anna, 60_000, { ...base, chatId: 77 })).toBe('d_desk')
+    })
+
     test('a desk session is never swept', () => {
       let now = 0
       const hub = new SessionHub({ graceMs: 1000, now: () => now, deskFor })

@@ -229,7 +229,7 @@ export class AwayResponder {
     if (away.quietMinutes > 0 && lastOut !== undefined && now - lastOut < away.quietMinutes * 60_000) return { skip: 'you wrote there lately' } // R7
     if (this.d.hub.takeoverOf(chat.id) !== null) return { skip: 'handed to Claude' } // R8
     if (this.d.paused?.(chat.id)) return { skip: 'paused by a moderator' }
-    if (this.d.hub.handledLive(chat.id) && isListed(config, 'autoReply', chat)) return { skip: 'Claude is answering' }
+    if (this.d.hub.handledLive(chat) && isListed(config, 'autoReply', chat)) return { skip: 'Claude is answering' }
     if (paged || this.d.pages().some(p => p.senderKey === String(msg.from?.id ?? chat.id))) return { skip: 'paged' } // R9
     return { window }
   }
