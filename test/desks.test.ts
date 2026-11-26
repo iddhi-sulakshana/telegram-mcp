@@ -45,9 +45,10 @@ describe('desks in config.json', () => {
     expect(deskOf(c, { id: 10 })).toBe('desk')
   })
 
-  test('the example config has a desk that owns leo', () => {
+  test('the example config shows a desk that owns nothing yet (copying it cuts no session off)', () => {
     const example = parseConfig(readFileSync(join(import.meta.dir, '../config.example.json'), 'utf8'))
-    expect(deskOf(example, { id: example.chats.leo!.id })).toBe('desk')
+    expect(example.desks).toEqual({ desk: { chats: [] } })
+    expect(deskOf(example, { id: example.chats.leo!.id })).toBeNull()
   })
 
   test('a desk name is lowercase letters, digits, - and _', () => {

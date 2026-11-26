@@ -392,7 +392,8 @@ switch (cmd) {
     const at = rest.indexOf('--desk')
     const asked = at >= 0 ? rest[at + 1] : process.env.TELEGRAM_MCP_DESK
     const desk = deskName(asked)
-    if (asked !== undefined && !desk) process.stderr.write(`[telegram-mcp] ignoring desk name "${asked}": use 1 to 32 lowercase letters, digits, - and _\n`)
+    if (at >= 0 && asked === undefined) process.stderr.write('[telegram-mcp] --desk needs a name; starting as an ordinary session\n')
+    else if (asked !== undefined && !desk) process.stderr.write(`[telegram-mcp] ignoring desk name "${asked}": use 1 to 32 lowercase letters, digits, - and _\n`)
     await runProxy({ channel: rest.includes('--channel') || process.env.TELEGRAM_MCP_CHANNEL === '1', desk })
     break
   }

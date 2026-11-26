@@ -133,6 +133,9 @@ const STICKER_TEXT = '[sticker]'
 
 /** How far back a desk's catch-up reads each of its chats (catchUpDesk). */
 const CATCH_UP_LIMIT = 100
+/** How long a desk's catch-up waits for Telegram to connect, and how often it looks. */
+const CATCH_UP_WAIT_MS = 60_000
+const CATCH_UP_POLL_MS = 1_000
 /** The longest caption Telegram takes under a file (without Premium). */
 const CAPTION_MAX = 1024
 
@@ -294,12 +297,12 @@ export class Service {
    * autoReply). Only the desk's own chats: other sessions may hear the rest, and would get them
    * twice. Chats with no starting point are skipped. Once per desk per daemon run. Returns how many.
    */
-  async catchUpDesk(sid: string, waitMs = 60_000): Promise<number> {
+  async catchUpDesk(sid: string, waitMs = CATCH_UP_WAIT_MS): Promise<number> {
     const { hub, tg, store } = this.d
     const desk = hub.deskOf(sid)
     if (!desk || this.#caughtUp.has(desk)) return 0
     // Right after a daemon start Telegram may still be connecting.
-    for (const end = Date.now() + waitMs; tg.state().phase !== 'connected' && Date.now() < end; ) await new Promise(r => setTimeout(r, 1_000))
+    for (const end = Date.now() + waitMs; tg.state().phase !== 'connected' && Date.now() < end; ) await new Promise(r => setTimeout(r, Math.min(CATCH_UP_POLL_MS, waitMs)))
     if (tg.state().phase !== 'connected') {
       this.d.log?.(`desk ${desk}: no catch-up yet, Telegram is not connected; it runs on the desk's next hello`)
       return 0

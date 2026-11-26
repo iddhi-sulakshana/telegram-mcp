@@ -344,6 +344,55 @@ describe('desk sessions through the daemon', () => {
     expect(daemon.hub.has('anything')).toBe(false)
   })
 
+  test("a moderator's /bots command in the history is noted, never handed to the desk", async () => {
+    const config = { ...CONFIG, moderation: { enabled: true, moderators: [LEO.id] } }
+    const home = mkdtempSync(join(tmpdir(), 'tgmcp-desk-bots-'))
+    const a = await start(config, home)
+    const before = await connect(a.daemon, { sessionId: 's_deskone1', desk: 'desk' })
+    await before.client.call('telegram_watch', { chat: 'leo' })
+    a.tg.emit(LEO.id, 'handled', LEO.id, { id: 7001 })
+    await settle()
+    before.client.close()
+    await a.daemon.stop()
+
+    const b = await start(config, home)
+    const at = (id: number, text: string) => ({
+      id, chatId: LEO.id, date: new Date().toISOString(), from: LEO, outgoing: false, text, media: null, replyToId: null, topicId: null,
+    })
+    b.tg.history.set(LEO.id, [at(7001, 'handled'), at(7002, '/bots stop'), at(7003, 'missed')])
+    const after = await connect(b.daemon, { sessionId: 's_desktwo2', desk: 'desk' })
+    await settle()
+    expect(after.events.map(e => e.text)).toEqual(['missed'])
+    expect(b.daemon.hub.lastSeen('d_desk', LEO.id)).toBe(7003)
+  })
+
+  test('a catch-up while Telegram is not connected waits, says so, and runs on a later hello', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'tgmcp-desk-offline-'))
+    const a = await start(CONFIG, home)
+    const before = await connect(a.daemon, { sessionId: 's_deskone1', desk: 'desk' })
+    await before.client.call('telegram_watch', { chat: 'leo' })
+    a.tg.emit(LEO.id, 'handled', LEO.id, { id: 8001 })
+    await settle()
+    before.client.close()
+    await a.daemon.stop()
+
+    const logs: string[] = []
+    const paths = getPaths(home)
+    const tg = new FakeTelegram().add(LEO, ANNA)
+    tg.phase = 'connecting'
+    tg.history.set(LEO.id, [
+      { id: 8002, chatId: LEO.id, date: new Date().toISOString(), from: LEO, outgoing: false, text: 'missed', media: null, replyToId: null, topicId: null },
+    ])
+    const b = await createDaemon({ paths, port: 0, telegram: tg, log: m => logs.push(m), pageBotToken: null })
+    cleanup.push(() => b.stop())
+    b.hub.attachProxy('d_desk', { label: 'x', channel: false, watches: [], desk: 'desk', startedAt: 1 }, { send: () => 1 })
+    expect(await b.service.catchUpDesk('d_desk', 50)).toBe(0)
+    expect(logs.some(l => l.includes('no catch-up yet'))).toBe(true)
+    tg.phase = 'connected'
+    expect(await b.service.catchUpDesk('d_desk', 50)).toBe(1)
+    expect(b.hub.drain('d_desk').events.map(e => e.text)).toEqual(['missed'])
+  })
+
   test('a desk name that is not valid is ignored: the proxy is an ordinary session', async () => {
     const { daemon } = await start()
     const odd = await connect(daemon, { sessionId: 's_oddname1', desk: 'Not A Desk' })
