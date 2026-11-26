@@ -5,8 +5,8 @@
 // the chats you last sent to (click one to see what was sent). Contacts: every saved chat with its
 // Listen switch on the row, a filter, and its sending rule, paging and nickname in config.json.
 // Away: the away auto-reply, on or off, its hours, quiet minutes and message.
-// Talks only to the local daemon on 127.0.0.1, authenticated with the token the daemon keeps in
-// the login Keychain (service "telegram-mcp"; a file instead with TELEGRAM_MCP_SECRET_STORE=file).
+// Talks only to the local daemon on 127.0.0.1, authenticated with the apps' own token ("ui-token") the
+// daemon keeps in the login Keychain (service "telegram-mcp"; a file instead with TELEGRAM_MCP_SECRET_STORE=file).
 
 import AppKit
 import AVFoundation
@@ -188,9 +188,12 @@ struct RecentChat: Identifiable {
 
 // MARK: - Talking to the daemon
 
-/// Reads the daemon's token. Mirrors src/shared/secrets.ts: service "telegram-mcp", account
-/// "token" for the default home and "token@<home>" for any other TELEGRAM_MCP_HOME.
+/// Reads the menu bar and tray apps' token (not the sessions' "token", which the daemon refuses on
+/// /ui/*). Mirrors src/shared/secrets.ts: service "telegram-mcp", account "ui-token" for the default
+/// home and "ui-token@<home>" for any other TELEGRAM_MCP_HOME.
 enum TokenSource {
+    static let name = "ui-token"
+
     struct Result: Sendable {
         let token: String?
         let status: OSStatus
@@ -202,13 +205,13 @@ enum TokenSource {
 
     static func account(home: URL) -> String {
         let defaultHome = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/telegram-mcp")
-        return home.path == defaultHome.path ? "token" : "token@\(home.path)"
+        return home.path == defaultHome.path ? name : "\(name)@\(home.path)"
     }
 
     /// Blocks while macOS asks "allow access?" the first time, so call it off the main thread.
     static func read(home: URL) -> Result {
         if usesFile {
-            let t = (try? String(contentsOf: home.appendingPathComponent("token"), encoding: .utf8))?
+            let t = (try? String(contentsOf: home.appendingPathComponent(name), encoding: .utf8))?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return Result(token: t?.isEmpty == false ? t : nil, status: t == nil ? errSecItemNotFound : errSecSuccess)
         }
@@ -331,9 +334,11 @@ final class Store: ObservableObject {
             let (data, resp) = try await URLSession.shared.data(for: req)
             let code = (resp as? HTTPURLResponse)?.statusCode
             guard code == 200 else {
-                if code == 401 { token = nil } // the token changed: read it again next time
+                if code == 401 || code == 403 { token = nil } // the token changed: read it again next time
                 reachable = false
-                problem = "The daemon refused the request (token mismatch?)."
+                problem = code == 403
+                    ? "The daemon refused this app's token. Update the daemon and this app together (tgmcp menubar)."
+                    : "The daemon refused the request (token mismatch?)."
                 return
             }
             let next = try JSONDecoder().decode(UiState.self, from: data)
