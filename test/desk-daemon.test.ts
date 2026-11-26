@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createDaemon } from '../src/daemon/main'
@@ -7,7 +7,7 @@ import { eventsKey } from '../src/daemon/server'
 import { DaemonClient } from '../src/mcp/daemon-client'
 import { getPaths } from '../src/shared/paths'
 import type { TgEvent } from '../src/shared/protocol'
-import { ANNA, FakeTelegram, LEO, TEAM_QA } from './fake-telegram'
+import { ANNA, FakeTelegram, LEO, LEONARDO, TEAM_QA } from './fake-telegram'
 
 const CONFIG = {
   footer: '',
@@ -438,6 +438,105 @@ describe('desk sessions through the daemon', () => {
     const second = await daemon.service.call('d_desk', 'telegram_get_events', {})
     expect(second.text.match(/^Telegram message from/gm)).toHaveLength(50)
     expect(second.text).not.toContain('more waiting')
+  })
+
+  test('config.json invalid at start loses no desk: desks.json keeps it, and its proxy is still the desk', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'tgmcp-desk-badconfig-'))
+    const a = await start(CONFIG, home)
+    const before = await connect(a.daemon, { sessionId: 's_deskone1', desk: 'desk' })
+    await before.client.call('telegram_watch', { chat: 'leo' })
+    before.client.close()
+    await settle()
+    a.tg.emit(LEO.id, 'queued before the restart', LEO.id, { id: 7001 })
+    await settle()
+    await a.daemon.stop()
+
+    const paths = getPaths(home)
+    // A config.json that doesn't parse (a typo, a desk name in capitals).
+    writeFileSync(paths.config, '{ "desks": { "Desk": ')
+    const tg = new FakeTelegram().add(LEO, ANNA)
+    const b = await createDaemon({ paths, port: 0, telegram: tg, log: () => {}, pageBotToken: null, hub: { graceMs: 0 } })
+    cleanup.push(() => b.stop())
+    expect(b.store.writesRefused()).not.toBeNull()
+    // The sweep (every 30 s on the daemon) keeps the desk while the config is unknown.
+    expect(b.hub.sweep()).toEqual([])
+    b.hub.flush()
+    const saved = JSON.parse(readFileSync(join(home, 'desks.json'), 'utf8'))
+    expect(saved.desks.desk.queue.map((e: TgEvent) => e.text)).toEqual(['queued before the restart'])
+    expect(saved.desks.desk.watches).toHaveLength(1)
+
+    // Its proxy is still the desk, and gets what waited.
+    const after = await connect(b, { sessionId: 's_desktwo2', desk: 'desk' })
+    await settle()
+    expect(b.hub.deskOf('d_desk')).toBe('desk')
+    expect(after.events.map(e => e.text)).toEqual(['queued before the restart'])
+    // Once a valid config.json loads, everything is as before.
+    writeFileSync(paths.config, JSON.stringify(CONFIG))
+    b.store.reload()
+    expect(b.store.writesRefused()).toBeNull()
+    expect((await after.client.call('telegram_status', {})).result.text).toContain('Desk: desk')
+  })
+
+  test('a catch-up that found Telegram not connected runs once it is, without another hello', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'tgmcp-desk-late-'))
+    const a = await start(CONFIG, home)
+    const before = await connect(a.daemon, { sessionId: 's_deskone1', desk: 'desk' })
+    await before.client.call('telegram_watch', { chat: 'leo' })
+    a.tg.emit(LEO.id, 'handled', LEO.id, { id: 8101 })
+    await settle()
+    before.client.close()
+    await a.daemon.stop()
+
+    const paths = getPaths(home)
+    const tg = new FakeTelegram().add(LEO, ANNA)
+    tg.phase = 'connecting'
+    tg.history.set(LEO.id, [
+      { id: 8102, chatId: LEO.id, date: new Date().toISOString(), from: LEO, outgoing: false, text: 'missed while offline', media: null, replyToId: null, topicId: null },
+    ])
+    const b = await createDaemon({ paths, port: 0, telegram: tg, log: () => {}, pageBotToken: null })
+    cleanup.push(() => b.stop())
+    // Started after the first daemon's proxy, so it holds the desk at once.
+    expect(b.hub.attachProxy('d_desk', { label: 'x', channel: false, watches: [], desk: 'desk', startedAt: Date.now() }, { send: () => 1 })).toBe(true)
+    expect(await b.service.catchUpDesk('d_desk', 20)).toBe(0)
+    // Nothing while Telegram is still connecting.
+    b.service.catchUpWaiting()
+    await settle()
+    expect(b.hub.pending('d_desk')).toBe(0)
+    tg.phase = 'connected'
+    b.service.catchUpWaiting()
+    await settle()
+    expect(b.hub.drain('d_desk').events.map(e => e.text)).toEqual(['missed while offline'])
+    // Once only.
+    b.service.catchUpWaiting()
+    await settle()
+    expect(b.hub.pending('d_desk')).toBe(0)
+  })
+
+  test("telegram_status flags an old watch on a chat a desk lists by @username", async () => {
+    const config = { ...CONFIG, rules: { autoReply: ['leo', 'anna', '@leonardo_s'] }, desks: {} }
+    const { daemon, tg, paths } = await start(config)
+    tg.add(LEONARDO)
+    const plain = await connect(daemon, { sessionId: 's_plainone' })
+    expect((await plain.client.call('telegram_watch', { chat: '@leonardo_s' })).result.isError).toBeFalsy()
+    writeFileSync(paths.config, JSON.stringify({ ...config, desks: { desk: { chats: ['@leonardo_s'] } } }))
+    daemon.store.reload()
+    expect((await plain.client.call('telegram_status', {})).result.text).toContain('belongs to desk "desk"')
+  })
+
+  test('telegram_get_events says when messages expired, apart from a full queue', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'tgmcp-desk-expired-'))
+    const paths = getPaths(home)
+    writeFileSync(paths.config, JSON.stringify(CONFIG))
+    const tg = new FakeTelegram().add(LEO, ANNA)
+    const daemon = await createDaemon({ paths, port: 0, telegram: tg, log: () => {}, pageBotToken: null, hub: { deskMaxAgeMs: 60_000 } })
+    cleanup.push(() => daemon.stop())
+    daemon.hub.attachProxy('d_desk', { label: 'x', channel: false, watches: [], desk: 'desk', startedAt: 1 }, { send: () => 1 })
+    daemon.hub.addWatch('d_desk', { chatId: LEO.id, chatLabel: 'Leo' })
+    tg.emit(LEO.id, 'too old', LEO.id, { id: 9501, date: new Date(Date.now() - 120_000).toISOString() })
+    daemon.hub.sweep()
+    const r = await daemon.service.call('d_desk', 'telegram_get_events', {})
+    expect(r.text).toContain('1 older messages expired')
+    expect(r.text).not.toContain('queue was full')
   })
 
   test('a desk name that is not valid is ignored: the proxy is an ordinary session', async () => {

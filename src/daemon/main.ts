@@ -54,7 +54,11 @@ export async function createDaemon(o: DaemonOptions) {
   const hub = new SessionHub({
     log,
     deskFor: chat => deskOf(store.get(), chat),
-    deskConfigured: name => Object.hasOwn(store.get().desks, name),
+    // While no valid config.json has loaded since start, which desks it lists is unknown: keep them all
+    // (desks.json stays as it is) until one does.
+    deskConfigured: name => store.writesRefused() !== null || Object.hasOwn(store.get().desks, name),
+    // A proxy that waited for a desk got it: it gets the catch-up a hello would have started.
+    onDeskHolder: sid => void service.catchUpDesk(sid).catch(e => log(`${sid}: catch-up failed: ${e instanceof Error ? e.message : String(e)}`)),
     saveDelayMs: 250,
     desks: new DeskStore(join(o.paths.home, 'desks.json'), log),
     ...o.hub,
@@ -200,6 +204,8 @@ export async function createDaemon(o: DaemonOptions) {
 
   const timer = setInterval(() => {
     for (const sid of hub.sweep()) log(`session ${sid} expired, its watches are gone`)
+    // A desk whose catch-up found Telegram not connected yet gets it once Telegram is.
+    service.catchUpWaiting()
     service.sweepApprovals()
   }, 30_000)
 

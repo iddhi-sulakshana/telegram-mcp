@@ -272,7 +272,9 @@ export function startServer(o: ServerOptions) {
           // A proxy started with --desk speaks as the desk's one session; a name that isn't valid, or
           // that config.json doesn't list, is ignored.
           let desk = deskName(msg.desk)
-          if (desk && !Object.hasOwn(o.store.get().desks, desk)) {
+          // While no valid config.json has loaded since start, a desk desks.json kept is taken on trust.
+          const kept = desk !== null && o.store.writesRefused() !== null && o.hub.deskOf(deskSessionId(desk)) === desk
+          if (desk && !kept && !Object.hasOwn(o.store.get().desks, desk)) {
             o.log(`session ${msg.sessionId} asked for desk "${desk}", which config.json doesn't list: an ordinary session`)
             desk = null
           }

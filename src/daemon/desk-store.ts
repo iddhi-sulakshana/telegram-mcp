@@ -6,7 +6,8 @@ import type { TgEvent, WatchSpec } from '../shared/protocol'
 import { oneLine } from '../shared/text'
 
 /** A queued message older than this is dropped when desks.json loads: a desk that never came back doesn't keep text for ever. */
-export const DESK_QUEUE_MAX_AGE_MS = 7 * 24 * 60 * 60_000
+export const DESK_QUEUE_MAX_AGE_DAYS = 7
+export const DESK_QUEUE_MAX_AGE_MS = DESK_QUEUE_MAX_AGE_DAYS * 24 * 60 * 60_000
 
 /** What the daemon keeps for one desk, so a restart of the daemon or of the desk's Claude session loses nothing. */
 export interface DeskState {
@@ -20,6 +21,8 @@ export interface DeskState {
   queue: TgEvent[]
   /** How many were dropped because the queue was full, not yet reported. */
   dropped: number
+  /** How many went because they passed the age limit (or could not be read back), not yet reported. */
+  expired: number
   /** The newest message id handed to the desk, per chat id: older or equal ones are not handed again. */
   seen: Record<string, number>
 }
@@ -61,6 +64,7 @@ const DeskSchema = z.object({
   watches: z.array(z.unknown()).default([]),
   queue: z.array(z.unknown()).default([]),
   dropped: z.number().int().nonnegative().default(0),
+  expired: z.number().int().nonnegative().default(0),
   seen: z.record(z.string(), z.number().int()).default({}),
 })
 
@@ -116,11 +120,18 @@ export class DeskStore {
         this.log(`desks.json: desk "${name}" could not be read; it starts with no saved state`)
         continue
       }
-      // Notices (/reply, moderator) are never kept; drop any an older version wrote. Old messages go too.
+      // Notices (/reply, moderator) are never kept; drop any an older version wrote, uncounted. Old
+      // messages go too, counted as expired. Entries that can't be read are only logged, by number.
+      let unreadable = 0
       const all = d.data.queue.flatMap(e => {
         const r = EventSchema.safeParse(e)
-        return r.success && !r.data.takeover && !r.data.moderation ? [r.data as unknown as TgEvent] : []
+        if (!r.success) {
+          unreadable++
+          return []
+        }
+        return !r.data.takeover && !r.data.moderation ? [r.data as unknown as TgEvent] : []
       })
+      if (unreadable) this.log(`desks.json: ${unreadable} queued messages of desk "${name}" could not be read and were left out`)
       const queue = all.filter(e => !(Date.parse(e.date) < cutoff))
       out.set(name, {
         ...d.data,
@@ -128,7 +139,8 @@ export class DeskStore {
         label: oneLine(d.data.label),
         watches: cleanWatches(d.data.watches),
         queue,
-        dropped: d.data.dropped + (d.data.queue.length - queue.length),
+        dropped: d.data.dropped,
+        expired: d.data.expired + (all.length - queue.length),
       })
     }
     return out

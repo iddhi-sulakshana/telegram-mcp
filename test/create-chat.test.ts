@@ -454,6 +454,22 @@ describe('telegram_create_chat: the discussion group', () => {
     expect(tg.links).toHaveLength(0)
   })
 
+  test("the discussion group joined another session's desk while it waited: refused on approval, nothing created", async () => {
+    setup()
+    trayOpen()
+    const r = await svc.call('s1', 'telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'existing', chat: 'qa' } })
+    expect(r.isError).toBeFalsy()
+    store.update(c => {
+      c.desks = { ops: { chats: ['qa'] } }
+    })
+    const res = await tray(r.approval!.id, true)
+    expect(res.isError).toBe(true)
+    expect(res.text).toContain('desk "ops"')
+    expect(tg.created).toHaveLength(0)
+    expect(tg.links).toHaveLength(0)
+    expect(logs.some(l => l.startsWith(`create chat refused after approval (discussion group ${TEAM_QA.id} belongs to desk "ops")`))).toBe(true)
+  })
+
   test('paused while it waited: refused on approval, nothing created', async () => {
     setup({ chatCreation: { enabled: true }, moderation: { enabled: true, moderators: [ANNA.id] } })
     trayOpen()

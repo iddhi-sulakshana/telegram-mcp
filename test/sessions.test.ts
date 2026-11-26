@@ -203,7 +203,8 @@ describe('SessionHub', () => {
     })
 
     test("the newest-started proxy holds the desk; it closes the older one's Monitors, and an older one can't take it back", () => {
-      const hub = new SessionHub({ deskFor })
+      let now = 1_000
+      const hub = new SessionHub({ deskFor, now: () => now })
       const closed: string[] = []
       const monitor = (name: string) => ({ got: [] as string[], send(d: string) { this.got.push(d) }, close: () => closed.push(name) })
       const older = sink()
@@ -230,9 +231,12 @@ describe('SessionHub', () => {
       expect(newMonitor.got).toHaveLength(1)
       expect(oldMonitor.got).toHaveLength(0)
 
-      // Once the newer one is gone, an older one may hold the desk again.
+      // Once the newer one is gone, past the hold, the older one still connected gets the desk back by itself.
       hub.detachProxy('d_desk', newer)
-      expect(hub.attachProxy('d_desk', { label: 'old', channel: false, watches: [], desk: 'desk', startedAt: 100 }, older)).toBe(true)
+      expect(hub.isCurrentProxy('d_desk', older)).toBe(false)
+      now += 31_000
+      hub.sweep()
+      expect(hub.isCurrentProxy('d_desk', older)).toBe(true)
       expect(closed).toEqual(['old', 'new'])
     })
 
@@ -264,6 +268,77 @@ describe('SessionHub', () => {
       const fresh = new SessionHub({ deskFor, now: () => 5_000 })
       fresh.attachProxy('d_desk', { label: 'c', channel: false, watches: [], desk: 'desk', startedAt: 3 }, sink())
       expect(Number(fresh.eventsEpoch('d_desk').slice(1))).toBeGreaterThan(before)
+    })
+
+    test('a Claude restart or /mcp (a new proxy while none holds the desk) keeps the Monitor URL and the Monitors', () => {
+      const hub = new SessionHub({ deskFor })
+      const closed: string[] = []
+      const a = sink()
+      hub.attachProxy('d_desk', { label: 'a', channel: false, watches: [], desk: 'desk', startedAt: 1_000 }, a)
+      hub.attachMonitor('d_desk', { send: () => 1, close: () => closed.push('m') } as never)
+      const epoch = hub.eventsEpoch('d_desk')
+      expect(epoch).not.toBe('e0')
+      hub.detachProxy('d_desk', a)
+      const b = sink()
+      expect(hub.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk', startedAt: 2_000 }, b)).toBe(true)
+      expect(hub.eventsEpoch('d_desk')).toBe(epoch)
+      expect(closed).toEqual([])
+      expect(hub.monitorCount('d_desk')).toBe(1)
+      expect(hub.isCurrentProxy('d_desk', b)).toBe(true)
+    })
+
+    test("a holder's blip: it comes back within the hold and keeps the desk; an older proxy waiting meanwhile doesn't take it", () => {
+      let now = 1_000
+      const hub = new SessionHub({ deskFor, now: () => now })
+      const older = sink()
+      const newer = sink()
+      hub.attachProxy('d_desk', { label: 'new', channel: false, watches: [], desk: 'desk', startedAt: 200 }, newer)
+      expect(hub.attachProxy('d_desk', { label: 'old', channel: false, watches: [], desk: 'desk', startedAt: 100 }, older)).toBe(false)
+      const epoch = hub.eventsEpoch('d_desk')
+      hub.detachProxy('d_desk', newer)
+      now += 5_000
+      hub.sweep()
+      expect(hub.isCurrentProxy('d_desk', older)).toBe(false)
+      // The older one saying hello again while the desk is held: still waits.
+      expect(hub.attachProxy('d_desk', { label: 'old', channel: false, watches: [], desk: 'desk', startedAt: 100 }, older)).toBe(false)
+      expect(hub.attachProxy('d_desk', { label: 'new', channel: false, watches: [], desk: 'desk', startedAt: 200 }, newer)).toBe(true)
+      expect(hub.eventsEpoch('d_desk')).toBe(epoch)
+      now += 60_000
+      hub.sweep()
+      expect(hub.isCurrentProxy('d_desk', newer)).toBe(true)
+      expect(hub.isCurrentProxy('d_desk', older)).toBe(false)
+    })
+
+    test("a waiting proxy that disconnects is out of line: it isn't given the desk later", () => {
+      let now = 1_000
+      const hub = new SessionHub({ deskFor, now: () => now })
+      const older = sink()
+      const newer = sink()
+      hub.attachProxy('d_desk', { label: 'new', channel: false, watches: [], desk: 'desk', startedAt: 200 }, newer)
+      hub.attachProxy('d_desk', { label: 'old', channel: false, watches: [], desk: 'desk', startedAt: 100 }, older)
+      hub.detachProxy('d_desk', older)
+      hub.detachProxy('d_desk', newer)
+      now += 60_000
+      hub.sweep()
+      expect(hub.isCurrentProxy('d_desk', older)).toBe(false)
+      expect(hub.heldDesks()).toEqual([])
+    })
+
+    test("a moderator's pause in a desk chat is told only to the desk, not to other sessions' silent watches there", () => {
+      const hub = new SessionHub({ deskFor })
+      hub.attachProxy('s1', { label: 'a', channel: false, watches: [] }, sink())
+      hub.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk' }, sink())
+      hub.addWatch('s1', { chatId: -5, chatLabel: 'g' })
+      hub.addWatch('d_desk', { chatId: -5, chatLabel: 'g' })
+      hub.addWatch('s1', { chatId: -6, chatLabel: 'h' })
+      const event = { ...base, moderation: { action: 'pause' as const, all: false, until: '10:00', minutes: 5 } }
+      expect(hub.moderate(-5, event, false)).toEqual(['d_desk'])
+      // Every chat: each session with a watch it really hears.
+      expect(hub.moderate(null, { ...event, moderation: { action: 'resume' as const, all: true } }, false).sort()).toEqual(['d_desk', 's1'])
+      const hub2 = new SessionHub({ deskFor })
+      hub2.attachProxy('s1', { label: 'a', channel: false, watches: [] }, sink())
+      hub2.addWatch('s1', { chatId: -5, chatLabel: 'g' })
+      expect(hub2.moderate(null, { ...event, moderation: { action: 'resume' as const, all: true } }, false)).toEqual([])
     })
 
     test('an ordinary session is always its own current proxy', () => {
@@ -334,6 +409,66 @@ describe('SessionHub', () => {
         expect(third.pending('d_desk')).toBe(0)
         // Delivered is gone from disk too.
         expect(new SessionHub({ deskFor, desks: new DeskStore(file) }).pending('d_desk')).toBe(0)
+      })
+
+      test('after a daemon restart the newest-started proxy keeps the desk, even if an older one says hello first', () => {
+        const file = path()
+        const first = new SessionHub({ deskFor, desks: new DeskStore(file) })
+        first.attachProxy('d_desk', { label: 'new', channel: false, watches: [], desk: 'desk', startedAt: 2_000 }, sink())
+        first.addWatch('d_desk', { chatId: -5, chatLabel: 'g' })
+        const epoch = first.eventsEpoch('d_desk')
+
+        let now = Date.now()
+        const promoted: string[] = []
+        const second = new SessionHub({ deskFor, desks: new DeskStore(file), now: () => now, onDeskHolder: id => promoted.push(id) })
+        const older = sink()
+        const newer = sink()
+        expect(second.attachProxy('d_desk', { label: 'old', channel: false, watches: [], desk: 'desk', startedAt: 1_000 }, older)).toBe(false)
+        second.dispatch(msg(-5, 7, 'while the older one waits'), describeMsg)
+        // Channel mode, so what waited is pushed to its proxy at once.
+        expect(second.attachProxy('d_desk', { label: 'new', channel: true, watches: [], desk: 'desk', startedAt: 2_000 }, newer)).toBe(true)
+        // Its saved Monitor URL still works, and what came in meanwhile went to it, not the older one.
+        expect(second.eventsEpoch('d_desk')).toBe(epoch)
+        expect(newer.got.join('')).toContain('while the older one waits')
+        expect(older.got.join('')).not.toContain('while the older one waits')
+        now += 60_000
+        second.sweep()
+        expect(second.isCurrentProxy('d_desk', newer)).toBe(true)
+        expect(promoted).toEqual([])
+      })
+
+      test("after a daemon restart a desk whose holder never comes back goes to the proxy waiting for it, past the hold", () => {
+        const file = path()
+        const first = new SessionHub({ deskFor, desks: new DeskStore(file) })
+        first.attachProxy('d_desk', { label: 'new', channel: false, watches: [], desk: 'desk', startedAt: 2_000 }, sink())
+        first.addWatch('d_desk', { chatId: -5, chatLabel: 'g' })
+        const epoch = first.eventsEpoch('d_desk')
+
+        let now = Date.now() + 1
+        const promoted: string[] = []
+        const second = new SessionHub({ deskFor, desks: new DeskStore(file), now: () => now, onDeskHolder: id => promoted.push(id) })
+        const older = sink()
+        expect(second.attachProxy('d_desk', { label: 'old', channel: false, watches: [], desk: 'desk', startedAt: 1_000 }, older)).toBe(false)
+        now += 10_000
+        second.sweep()
+        expect(second.isCurrentProxy('d_desk', older)).toBe(false)
+        now += 30_000
+        second.sweep()
+        expect(second.isCurrentProxy('d_desk', older)).toBe(true)
+        expect(promoted).toEqual(['d_desk'])
+        // The gone holder's Monitor URL stops working; the new holder gets the desk's watches.
+        expect(second.eventsEpoch('d_desk')).not.toBe(epoch)
+        expect(older.got.map(g => JSON.parse(g)).some(m => m.t === 'watches' && m.watches.length === 1)).toBe(true)
+      })
+
+      test('a Claude restart while the daemon was down too: the new proxy keeps the saved Monitor URL', () => {
+        const file = path()
+        const first = new SessionHub({ deskFor, desks: new DeskStore(file) })
+        first.attachProxy('d_desk', { label: 'a', channel: false, watches: [], desk: 'desk', startedAt: 1_000 }, sink())
+        const epoch = first.eventsEpoch('d_desk')
+        const second = new SessionHub({ deskFor, desks: new DeskStore(file) })
+        expect(second.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk', startedAt: 5_000 }, sink())).toBe(true)
+        expect(second.eventsEpoch('d_desk')).toBe(epoch)
       })
 
       test('a message the desk already got is not delivered twice (a catch-up replay)', () => {
@@ -484,9 +619,11 @@ describe('SessionHub', () => {
         expect(s.label).not.toContain('\n')
         expect(s.watches[0]!.chatLabel).toBe('g fake line')
         expect(s.watches[0]!.note).toBe('a b')
-        const { events, dropped } = hub.drain('d_desk')
+        const { events, dropped, expired } = hub.drain('d_desk')
         expect(events.map(e => e.text)).toEqual(['b', 'c'])
-        expect(dropped).toBe(2)
+        // One over the age limit, one that didn't fit: each counted as what it was.
+        expect(expired).toBe(1)
+        expect(dropped).toBe(1)
       })
 
       test('one bad entry in desks.json costs only that entry, never the whole file', () => {
@@ -529,9 +666,11 @@ describe('SessionHub', () => {
         hub.dispatch(msg(-5, 7, 'old', { date: new Date(Date.now() - 120_000).toISOString() }), describeMsg)
         hub.dispatch(msg(-5, 7, 'new'), describeMsg)
         hub.sweep()
-        const { events, dropped } = new SessionHub({ deskFor, desks: new DeskStore(file) }).drain('d_desk')
+        const { events, dropped, expired } = new SessionHub({ deskFor, desks: new DeskStore(file) }).drain('d_desk')
         expect(events.map(e => e.text)).toEqual(['new'])
-        expect(dropped).toBe(1)
+        // Expired, not "queue full".
+        expect(expired).toBe(1)
+        expect(dropped).toBe(0)
       })
 
       test('a desks.json.bad older than the age limit is deleted; a newer one is kept', () => {

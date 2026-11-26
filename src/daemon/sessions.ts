@@ -6,6 +6,13 @@ import { fieldName, messageBody, quoted, senderLabel } from '../shared/text'
 /** A chat as a desk can list it: its marked id, and its @username when known. */
 type ChatKey = { id: number; username?: string | null }
 
+/** Queued events taken from a session, and what it lost meanwhile: dropped (queue full) or expired (age limit). */
+export interface Drained {
+  events: TgEvent[]
+  dropped: number
+  expired: number
+}
+
 export interface Sink {
   send(data: string): unknown
 }
@@ -18,14 +25,27 @@ interface Session {
   monitors: Set<Sink>
   watches: Map<string, WatchSpec>
   queue: TgEvent[]
+  /** Queued messages dropped because the queue was full, not yet reported. */
   dropped: number
+  /** A desk's queued messages that passed the age limit (or could not be read back), not yet reported. */
+  expired: number
   disconnectedAt: number | null
   /** The desk this session holds (its id is then deskSessionId(desk)), or null for an ordinary session. */
   desk: string | null
   /** For a desk: when its holding proxy started (ms), so the newest-started proxy holds it; 0 if unknown. */
   holderStartedAt: number
-  /** For a desk: bumped on every change of holder; its Monitor key is made from it (eventsEpoch). */
+  /**
+   * For a desk: bumped when a connected holder is replaced, or a waiting proxy is given the desk; its
+   * Monitor key is made from it (eventsEpoch). A hello while no proxy holds the desk keeps it.
+   */
   epoch: number
+  /**
+   * For a desk: until when (ms) it is kept for the proxy that last held it, after that proxy left or
+   * the daemon started. Meanwhile an older proxy waits in `standby` instead of taking it. 0: not held.
+   */
+  holdUntil: number
+  /** For a desk: older proxies that were turned away and are still connected, newest-started first in line. */
+  standby: Map<Sink, { startedAt: number; label: string; channel: boolean }>
   /** A desk's newest message id the daemon saw per chat, heard or not (kept in desks.json). */
   seen: Map<number, number>
   /** `seen` as desks.json had it when the daemon started: nothing up to it is handed over again. */
@@ -55,6 +75,13 @@ export interface HubOptions {
   saveDelayMs?: number
   /** A desk's queued messages older than this go on each sweep (and when desks.json loads). */
   deskMaxAgeMs?: number
+  /**
+   * How long a desk is kept for its last holder after that proxy leaves or the daemon starts, so an
+   * older proxy that says hello first doesn't take it. Proxies retry every 5 s at most.
+   */
+  deskHoldMs?: number
+  /** A proxy that was waiting was given a desk (its holder was gone longer than deskHoldMs). */
+  onDeskHolder?: (id: string) => void
 }
 
 /**
@@ -88,6 +115,8 @@ export class SessionHub {
   readonly #deskConfigured: (name: string) => boolean
   readonly #saveDelayMs: number
   readonly #deskMaxAgeMs: number
+  readonly #deskHoldMs: number
+  readonly #onDeskHolder: (id: string) => void
   #saveTimer: ReturnType<typeof setTimeout> | null = null
   /** A desk's state changed since desks.json was last written. */
   #dirty = false
@@ -108,6 +137,8 @@ export class SessionHub {
     this.#deskConfigured = opts.deskConfigured ?? (() => true)
     this.#saveDelayMs = opts.saveDelayMs ?? 0
     this.#deskMaxAgeMs = opts.deskMaxAgeMs ?? DESK_QUEUE_MAX_AGE_MS
+    this.#deskHoldMs = opts.deskHoldMs ?? 30_000
+    this.#onDeskHolder = opts.onDeskHolder ?? (() => {})
     // Desks known from before a restart: their watches apply, and their queue fills, before any proxy is back.
     for (const [desk, d] of this.#desks?.load() ?? []) {
       // A desk taken out of config.json since is dropped, with its queue (desks.json is rewritten on the next change).
@@ -119,10 +150,13 @@ export class SessionHub {
       s.desk = desk
       s.holderStartedAt = d.holder
       s.epoch = d.epoch
+      // Its holder may be on its way back: an older proxy that says hello first waits for it.
+      if (d.holder > 0) s.holdUntil = this.#now() + this.#deskHoldMs
       for (const w of d.watches) s.watches.set(w.id, w)
       // A file edited by hand, or an older and bigger limit: keep the newest that fit.
       s.queue = d.queue.slice(-this.#deskMaxQueue)
       s.dropped = d.dropped + (d.queue.length - s.queue.length)
+      s.expired = d.expired
       for (const [chatId, id] of Object.entries(d.seen)) {
         s.seen.set(Number(chatId), id)
         s.floor.set(Number(chatId), id)
@@ -162,6 +196,7 @@ export class SessionHub {
         // A /reply or moderator notice belongs to the run that sent it (takeovers aren't kept), so it isn't.
         queue: s.queue.filter(e => !e.takeover && !e.moderation),
         dropped: s.dropped,
+        expired: s.expired,
         seen: Object.fromEntries([...s.seen].map(([chatId, id]) => [String(chatId), id])),
       })
     }
@@ -191,6 +226,12 @@ export class SessionHub {
     if (ids.size > 2_000) ids.delete(ids.values().next().value!)
     s.seen.set(chatId, Math.max(s.seen.get(chatId) ?? id, id))
     this.#touch(s)
+  }
+
+  /** Whether this session hears a chat it watches: always, unless the chat is on another session's desk. */
+  #hears(s: Session, chat: ChatKey): boolean {
+    const desk = this.#deskFor(chat)
+    return desk === null || s.desk === desk
   }
 
   /** The desk session that owns this message's chat, if that desk has a session. */
@@ -233,10 +274,13 @@ export class SessionHub {
         watches: new Map(),
         queue: [],
         dropped: 0,
+        expired: 0,
         disconnectedAt: this.#now(),
         desk: null,
         holderStartedAt: 0,
         epoch: 0,
+        holdUntil: 0,
+        standby: new Map(),
         seen: new Map(),
         floor: new Map(),
         observed: new Map(),
@@ -253,8 +297,9 @@ export class SessionHub {
   /**
    * A proxy said hello. If the daemon restarted it no longer knows this session, so the proxy's copy of its watches is restored.
    * For a desk (id deskSessionId(desk)) the newest-started proxy holds it and gets the desk's watches.
-   * An older proxy, while a newer one is connected, is turned away: returns false, and its calls are
-   * refused (isCurrentProxy). Returns true when this proxy now acts for the session.
+   * An older proxy, while a newer one is connected or the desk is kept for one (deskHoldMs), is turned
+   * away: returns false, its calls are refused (isCurrentProxy), and it waits in line for the desk.
+   * Returns true when this proxy now acts for the session.
    */
   attachProxy(
     id: string,
@@ -267,22 +312,30 @@ export class SessionHub {
     const replaced = s.proxy !== null && s.proxy !== sink
     if (s.desk !== null) {
       const started = info.startedAt ?? 0
-      if (replaced && started < s.holderStartedAt) {
-        this.#log(`desk ${s.desk}: an older proxy (${info.label}) was turned away; a newer one holds it`)
+      s.standby.delete(sink)
+      // While no proxy holds the desk it is kept for its last holder for a while (after a daemon start,
+      // or after that proxy left), so an older proxy that says hello first doesn't take it.
+      const held = s.proxy === null && this.#now() < s.holdUntil
+      if ((replaced || held) && started < s.holderStartedAt) {
+        s.standby.set(sink, { startedAt: started, label: info.label, channel: info.channel })
+        this.#log(`desk ${s.desk}: an older proxy (${info.label}) was turned away; ${replaced ? 'a newer one holds it' : 'it is kept for a newer one'}`)
         return false
       }
-      // Another proxy (also one started in the same millisecond), or a different one after the holder left.
-      // The same proxy saying hello again on its own connection keeps everything.
-      if (replaced || started !== s.holderStartedAt) {
-        // A new holder: the Monitors so far are the old holder's, and its Monitor URL stops working (eventsEpoch).
-        for (const m of s.monitors) (m as { close?: () => void }).close?.()
-        s.monitors.clear()
+      if (replaced && s.proxy) {
+        // A connected holder replaced by another proxy (also one started in the same millisecond): its
+        // Monitors close and its Monitor URL stops working. It waits, and gets the desk back once this one is gone.
+        s.standby.set(s.proxy, { startedAt: s.holderStartedAt, label: s.label, channel: s.channel })
+        this.#newEpoch(s)
+      }
+      // A desk's first holder ever (no saved state): an epoch from the clock, so a Monitor URL made for a
+      // desk state since lost never works again. Otherwise, with no proxy holding the desk (a Claude
+      // restart, /mcp, a daemon restart), the Monitor URL stays.
+      if (s.epoch === 0) this.#newEpoch(s)
+      if (started !== s.holderStartedAt) {
         s.holderStartedAt = started
-        // From the clock, never just +1: a desk whose saved state was lost (desks.json set aside, or the desk
-        // taken out and put back) must not reach an epoch an old holder's Monitor URL was made for.
-        s.epoch = Math.max(s.epoch + 1, this.#now())
         this.#touch(s)
       }
+      s.holdUntil = 0
     }
     s.label = info.label
     s.channel = info.channel
@@ -319,15 +372,60 @@ export class SessionHub {
   }
 
   /** The desk this session holds, or null. */
+  /** Ids of the desk sessions a proxy holds now. */
+  heldDesks(): string[] {
+    return [...this.#sessions.values()].filter(s => s.desk !== null && s.proxy !== null).map(s => s.id)
+  }
+
   deskOf(id: string): string | null {
     return this.#sessions.get(id)?.desk ?? null
   }
 
   detachProxy(id: string, sink: Sink): void {
     const s = this.#sessions.get(id)
-    if (!s || s.proxy !== sink) return
+    if (!s) return
+    if (s.proxy !== sink) {
+      s.standby.delete(sink)
+      return
+    }
     s.proxy = null
     s.disconnectedAt = this.#now()
+    if (s.desk !== null) {
+      // Kept for this proxy for a while (a blip, a reconnect); then a waiting one gets it (sweep).
+      s.holdUntil = this.#now() + this.#deskHoldMs
+      this.#promote(s)
+    }
+  }
+
+  /** A desk's new holder: the Monitors so far close, and the Monitor URL they were opened with stops working (eventsEpoch). */
+  #newEpoch(s: Session): void {
+    for (const m of s.monitors) (m as { close?: () => void }).close?.()
+    s.monitors.clear()
+    // From the clock, never just +1: a desk whose saved state was lost (desks.json set aside, or the desk
+    // taken out and put back) must not reach an epoch an old holder's Monitor URL was made for.
+    s.epoch = Math.max(s.epoch + 1, this.#now())
+    this.#touch(s)
+  }
+
+  /**
+   * A desk no proxy holds, past its hold: the newest-started of the proxies waiting for it gets it.
+   * Its Monitor URL is new (it never had a working one); the one the desk's last holder had stops working.
+   */
+  #promote(s: Session): void {
+    if (s.desk === null || s.proxy !== null || s.standby.size === 0 || this.#now() < s.holdUntil) return
+    const [sink, p] = [...s.standby].reduce((a, b) => (b[1].startedAt > a[1].startedAt ? b : a))
+    s.standby.delete(sink)
+    this.#newEpoch(s)
+    s.holderStartedAt = p.startedAt
+    s.label = p.label
+    s.channel = p.channel
+    s.proxy = sink
+    s.disconnectedAt = null
+    s.holdUntil = 0
+    this.#log(`desk ${s.desk}: a waiting proxy (${p.label}) holds it now; its holder is gone`)
+    this.#syncWatches(s)
+    this.#flush(s)
+    this.#onDeskHolder(s.id)
   }
 
   /**
@@ -436,14 +534,15 @@ export class SessionHub {
   }
 
   /** Takes the queued events, oldest first: all of them, or at most `max`, leaving the rest queued. */
-  drain(id: string, max?: number): { events: TgEvent[]; dropped: number } {
+  drain(id: string, max?: number): Drained {
     const s = this.#sessions.get(id)
-    if (!s) return { events: [], dropped: 0 }
-    let out: { events: TgEvent[]; dropped: number }
+    if (!s) return { events: [], dropped: 0, expired: 0 }
+    let out: Drained
     if (max !== undefined && s.queue.length > max) {
-      out = { events: s.queue.slice(0, max), dropped: s.dropped }
+      out = { events: s.queue.slice(0, max), dropped: s.dropped, expired: s.expired }
       s.queue = s.queue.slice(max)
       s.dropped = 0
+      s.expired = 0
       this.#touch(s)
     } else {
       out = this.#take(s)
@@ -452,10 +551,11 @@ export class SessionHub {
     return out
   }
 
-  #take(s: Session): { events: TgEvent[]; dropped: number } {
-    const out = { events: s.queue, dropped: s.dropped }
+  #take(s: Session): Drained {
+    const out = { events: s.queue, dropped: s.dropped, expired: s.expired }
     s.queue = []
     s.dropped = 0
+    s.expired = 0
     this.#touch(s)
     return out
   }
@@ -545,9 +645,12 @@ export class SessionHub {
 
   /**
    * A moderator's pause (or its end) for this chat, or for every chat (null): ends takeovers there and
-   * tells each session that watches it, or had it taken over, once. Returns the sessions told.
+   * tells each session that watches it, or had it taken over, once. Returns the sessions told. On a
+   * desk's chat only the desk is told: the other sessions' watches there hear nothing.
    */
-  moderate(chatId: number | null, event: Omit<TgEvent, 'seq' | 'watchIds'>, endTakeovers: boolean): string[] {
+  moderate(chat: number | ChatKey | null, event: Omit<TgEvent, 'seq' | 'watchIds'>, endTakeovers: boolean): string[] {
+    const key = typeof chat === 'number' ? { id: chat } : chat
+    const chatId = key?.id ?? null
     const told = new Set<string>()
     if (endTakeovers) {
       for (const [id, t] of [...this.#takeovers]) {
@@ -557,7 +660,8 @@ export class SessionHub {
       }
     }
     for (const s of this.#sessions.values()) {
-      if ([...s.watches.values()].some(w => chatId === null || w.chatId === chatId)) told.add(s.id)
+      // A desk chat's watches outside its desk hear nothing there, so they aren't told about it either.
+      if ([...s.watches.values()].some(w => (key === null ? this.#hears(s, { id: w.chatId }) : w.chatId === key.id && this.#hears(s, key)))) told.add(s.id)
     }
     for (const id of told) {
       const s = this.#sessions.get(id)
@@ -615,11 +719,13 @@ export class SessionHub {
     const now = this.#now()
     for (const s of this.#sessions.values()) {
       if (s.desk !== null && this.#deskConfigured(s.desk)) {
+        // Its holder gone longer than the hold: a proxy waiting for it gets it.
+        this.#promote(s)
         // A desk is kept, but not its old messages: what nobody took in time doesn't stay on disk.
         const cutoff = now - this.#deskMaxAgeMs
         const kept = s.queue.filter(e => !(Date.parse(e.date) < cutoff))
         if (kept.length !== s.queue.length) {
-          s.dropped += s.queue.length - kept.length
+          s.expired += s.queue.length - kept.length
           s.queue = kept
           this.#touch(s)
         }
@@ -677,8 +783,9 @@ export class SessionHub {
   #flush(s: Session) {
     if (s.queue.length === 0) return
     if (!(s.channel && s.proxy) && s.monitors.size === 0) return
-    const { events, dropped } = this.#take(s)
-    if (dropped > 0) this.#log(`session ${s.id}: ${dropped} watched messages were dropped while nobody was listening`)
+    const { events, dropped, expired } = this.#take(s)
+    if (dropped > 0) this.#log(`session ${s.id}: ${dropped} watched messages were dropped while nobody was listening (queue full)`)
+    if (expired > 0) this.#log(`session ${s.id}: ${expired} watched messages expired while nobody was listening (older than the age limit, or unreadable in desks.json)`)
     for (const e of events) this.#deliver(s, e)
   }
 
