@@ -5,10 +5,10 @@ import { deskName } from '../shared/desks'
 import type { TgEvent, WatchSpec } from '../shared/protocol'
 import { oneLine } from '../shared/text'
 
-/** A queued message older than this is dropped when desks.json loads: a desk that never came back doesn't keep text for ever. */
 /** How many proxy start times desks.json keeps per desk for its current Monitor URL. */
 export const EPOCH_HOLDERS_MAX = 20
 
+/** A queued message older than this is dropped when desks.json loads: a desk that never came back doesn't keep text for ever. */
 export const DESK_QUEUE_MAX_AGE_DAYS = 7
 export const DESK_QUEUE_MAX_AGE_MS = DESK_QUEUE_MAX_AGE_DAYS * 24 * 60 * 60_000
 
@@ -66,9 +66,11 @@ const DeskSchema = z.object({
   label: z.string().default(''),
   holder: z.number().default(0),
   epoch: z.number().int().nonnegative().default(0),
+  // A bad list only costs the list, never the desk's watches and queue.
   epochHolders: z
     .array(z.number())
     .default([])
+    .catch([])
     .transform(a => a.slice(-EPOCH_HOLDERS_MAX)),
   watches: z.array(z.unknown()).default([]),
   queue: z.array(z.unknown()).default([]),

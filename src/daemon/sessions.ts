@@ -158,7 +158,7 @@ export class SessionHub {
       s.epoch = d.epoch
       s.epochHolders = new Set(d.epochHolders.length ? d.epochHolders : d.holder > 0 ? [d.holder] : [])
       // Its holder may be on its way back: an older proxy that says hello first waits for it.
-      if (d.holder > 0) s.holdUntil = this.#now() + this.#deskHoldMs
+      if (d.holder > 0) this.#hold(s)
       for (const w of d.watches) s.watches.set(w.id, w)
       // A file edited by hand, or an older and bigger limit: keep the newest that fit.
       s.queue = d.queue.slice(-this.#deskMaxQueue)
@@ -417,15 +417,20 @@ export class SessionHub {
     s.disconnectedAt = this.#now()
     if (s.desk !== null) {
       // Kept for this proxy for a while (a blip, a reconnect); then a waiting one gets it.
-      s.holdUntil = this.#now() + this.#deskHoldMs
+      this.#hold(s)
       this.#promote(s)
-      const timer = setTimeout(() => {
-        if (this.#sessions.get(s.id) !== s) return
-        this.#promote(s)
-        this.#save()
-      }, this.#deskHoldMs + 50)
-      ;(timer as { unref?: () => void }).unref?.()
     }
+  }
+
+  /** Keeps a desk for its last holder for deskHoldMs; when that ends, a proxy waiting for it gets it. */
+  #hold(s: Session): void {
+    s.holdUntil = this.#now() + this.#deskHoldMs
+    const timer = setTimeout(() => {
+      if (this.#sessions.get(s.id) !== s) return
+      this.#promote(s)
+      this.#save()
+    }, this.#deskHoldMs + 50)
+    ;(timer as { unref?: () => void }).unref?.()
   }
 
   /** A desk's new holder: the Monitors so far close, and the Monitor URL they were opened with stops working (eventsEpoch). */

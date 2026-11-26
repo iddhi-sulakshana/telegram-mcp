@@ -359,6 +359,18 @@ describe('SessionHub', () => {
       expect(hub2.eventsEpoch('d_desk')).not.toBe(e2)
     })
 
+    test('the end of the hold hands the desk to a waiting proxy by itself, without a sweep', async () => {
+      const hub = new SessionHub({ deskFor, deskHoldMs: 20 })
+      const holder = sink()
+      const waiting = sink()
+      hub.attachProxy('d_desk', { label: 'h', channel: false, watches: [], desk: 'desk', startedAt: 200 }, holder)
+      expect(hub.attachProxy('d_desk', { label: 'w', channel: false, watches: [], desk: 'desk', startedAt: 100 }, waiting)).toBe(false)
+      hub.detachProxy('d_desk', holder)
+      expect(hub.isCurrentProxy('d_desk', waiting)).toBe(false)
+      await Bun.sleep(150)
+      expect(hub.isCurrentProxy('d_desk', waiting)).toBe(true)
+    })
+
     test("a waiting proxy that disconnects is out of line: it isn't given the desk later", () => {
       let now = 1_000
       const hub = new SessionHub({ deskFor, now: () => now })
@@ -524,6 +536,28 @@ describe('SessionHub', () => {
         expect(second.eventsEpoch('d_desk')).toBe(epoch)
         expect(second.attachProxy('d_desk', { label: 'x', channel: false, watches: [], desk: 'desk', startedAt: 100 }, sink())).toBe(false)
         expect(second.eventsEpoch('d_desk')).not.toBe(epoch)
+      })
+
+      test('after a daemon restart the hold ends by itself too: a waiting proxy gets the desk without a sweep', async () => {
+        const file = path()
+        const first = new SessionHub({ deskFor, desks: new DeskStore(file) })
+        first.attachProxy('d_desk', { label: 'h', channel: false, watches: [], desk: 'desk', startedAt: Date.now() + 10_000 }, sink())
+        const second = new SessionHub({ deskFor, desks: new DeskStore(file), deskHoldMs: 20 })
+        const waiting = sink()
+        expect(second.attachProxy('d_desk', { label: 'w', channel: false, watches: [], desk: 'desk', startedAt: 1 }, waiting)).toBe(false)
+        await Bun.sleep(150)
+        expect(second.isCurrentProxy('d_desk', waiting)).toBe(true)
+      })
+
+      test("one bad epochHolders list in desks.json costs only the list, not the desk's watches and queue", () => {
+        const file = path()
+        writeFileSync(
+          file,
+          JSON.stringify({ version: 1, desks: { desk: { label: 'd', holder: 5, epoch: 9, epochHolders: ['x'], watches: [{ id: 'w_1', chatId: -5, chatLabel: 'g', createdAt: 0 }], queue: [], seen: {} } } }),
+        )
+        const hub = new SessionHub({ deskFor, desks: new DeskStore(file) })
+        expect(hub.isWatching('d_desk', -5)).toBe(true)
+        expect(hub.eventsEpoch('d_desk')).toBe('e9')
       })
 
       test('a Claude restart while the daemon was down too: the new proxy keeps the saved Monitor URL', () => {

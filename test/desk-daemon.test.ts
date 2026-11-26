@@ -124,7 +124,10 @@ describe('desk sessions through the daemon', () => {
     // A key made the ordinary way, without the desk's epoch, never opens a desk's stream.
     expect((await events(eventsKey(daemon.token, 'd_desk'))).status).toBe(401)
     await connect(daemon, { sessionId: 's_desktwo2', desk: 'desk' })
-    expect((await events(oldKey)).status).toBe(401)
+    const stale = await events(oldKey)
+    expect(stale.status).toBe(401)
+    // It says where the current URL is.
+    expect(await stale.text()).toContain('telegram_status')
     expect((await events(eventsKey(daemon.token, 'd_desk', daemon.hub.eventsEpoch('d_desk')))).status).toBe(400)
   })
 

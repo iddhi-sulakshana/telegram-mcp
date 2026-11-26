@@ -102,7 +102,11 @@ export function startServer(o: ServerOptions) {
           return new Response(authed ? 'bad session id\n' : 'unauthorized\n', { status: authed ? 400 : 401 })
         }
         if (!authed && !sameToken(url.searchParams.get('key'), eventsKey(o.token, sid, o.hub.eventsEpoch(sid)))) {
-          return new Response('unauthorized\n', { status: 401 })
+          // A desk's Monitor URL changes when another session gets the desk: say where the current one is.
+          const hint = sid.startsWith('d_')
+            ? "unauthorized: this desk's Monitor URL changed (another session held the desk). Call telegram_status for the current one; if it says another session holds the desk, this session no longer acts for it.\n"
+            : 'unauthorized\n'
+          return new Response(hint, { status: 401 })
         }
         return server.upgrade(req, { data: { kind: 'events', sessionId: sid } })
           ? undefined
