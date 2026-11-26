@@ -273,6 +273,8 @@ export function startServer(o: ServerOptions) {
           o.hub.attachProxy(sid, { label: msg.label, channel: msg.channel, watches: msg.watches ?? [], desk }, ws)
           send(ws, { t: 'welcome', telegram: o.tg.state() })
           o.log(`session ${sid} connected (${msg.label}${msg.channel ? ', channel' : ''}${desk ? `, desk ${desk}` : ''})`)
+          // A desk that comes back gets what its chats said while nothing could hand it over.
+          if (desk) void o.service.catchUpDesk(sid).catch(e => o.log(`desk ${desk}: catch-up failed: ${e instanceof Error ? e.message : String(e)}`))
           return
         }
         if (msg.t === 'call') {

@@ -273,6 +273,22 @@ describe('SessionHub', () => {
         expect(second.pending('d_desk')).toBe(1)
       })
 
+      test('a catch-up still hands over older missed messages after a newer one arrived live', () => {
+        const hub = new SessionHub({ deskFor, desks: new DeskStore(path()) })
+        hub.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk' }, sink())
+        hub.addWatch('d_desk', { chatId: -5, chatLabel: 'g' })
+        hub.dispatch(msg(-5, 7, 'seen', { id: 100 }), describeMsg)
+        const after = hub.lastSeen('d_desk', -5)!
+        // While the catch-up reads the history, a new message arrives live.
+        hub.dispatch(msg(-5, 7, 'live', { id: 105 }), describeMsg)
+        // The history then has 101..105: the missed ones go over, the live one isn't repeated.
+        for (const id of [101, 102, 105]) hub.dispatch(msg(-5, 7, `history ${id}`, { id }), describeMsg, { after })
+        // Ids up to `after` are never handed again.
+        expect(hub.dispatch(msg(-5, 7, 'old', { id: 99 }), describeMsg, { after })).toBe(0)
+        expect(hub.drain('d_desk').events.map(e => e.text)).toEqual(['seen', 'live', 'history 101', 'history 102'])
+        expect(hub.lastSeen('d_desk', -5)).toBe(105)
+      })
+
       test('ordinary sessions are not written to disk', () => {
         const file = path()
         const hub = new SessionHub({ deskFor, desks: new DeskStore(file) })

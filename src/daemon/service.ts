@@ -130,6 +130,9 @@ function autoReplyText(c: UiContact): string {
 }
 
 const STICKER_TEXT = '[sticker]'
+
+/** How far back a desk's catch-up reads each of its chats (catchUpDesk). */
+const CATCH_UP_LIMIT = 100
 /** The longest caption Telegram takes under a file (without Premium). */
 const CAPTION_MAX = 1024
 
@@ -279,6 +282,51 @@ export class Service {
   #assertWritable(): void {
     const refused = this.#writesRefused()
     if (refused) throw new Error(refused)
+  }
+
+  /**
+   * A desk is back (its proxy said hello): hand it the messages of its own chats that it never got,
+   * read from each chat's history after the newest id it has. That covers what Telegram's own catch-up
+   * can't (a long outage). Only the desk's own chats: other sessions may hear the rest, and would
+   * get them twice. Chats it has never heard have no starting point and are skipped. Returns how many.
+   */
+  async catchUpDesk(sid: string, waitMs = 60_000): Promise<number> {
+    const { hub, tg, store } = this.d
+    const desk = hub.deskOf(sid)
+    if (!desk) return 0
+    // Right after a daemon start Telegram may still be connecting.
+    for (const end = Date.now() + waitMs; tg.state().phase !== 'connected' && Date.now() < end; ) await new Promise(r => setTimeout(r, 1_000))
+    if (tg.state().phase !== 'connected') {
+      this.d.log?.(`desk ${desk}: no catch-up, Telegram is not connected`)
+      return 0
+    }
+    let handed = 0
+    for (const chatId of new Set(hub.watches(sid).map(w => w.chatId))) {
+      const after = hub.lastSeen(sid, chatId)
+      if (after === null) continue
+      try {
+        const peer = await this.#peerById(chatId)
+        const config = store.get()
+        // The same gates as a live message: the desk's own chat, still on autoReply, not paused.
+        if (deskOf(config, peer) !== desk || !isListed(config, 'autoReply', peer) || this.paused(chatId)) continue
+        const history = await tg.getHistory(chatId, { limit: CATCH_UP_LIMIT })
+        if (history.length === CATCH_UP_LIMIT && history.every(m => m.id > after)) {
+          this.d.log?.(`desk ${desk}: chat ${chatId} may have missed more than ${CATCH_UP_LIMIT} messages; only the newest ${CATCH_UP_LIMIT} are caught up`)
+        }
+        const me = tg.state().me?.id
+        for (const m of [...history].sort((a, b) => a.id - b.id)) {
+          if (m.outgoing || m.id <= after) continue
+          const msg: IncomingMessage = { ...m, chat: peer }
+          // A moderator's /bots command never reaches a session, late or not.
+          if (moderatorCommand(config, msg, me)) continue
+          if (hub.dispatch(msg, x => describeMessage(store, x), { after }) > 0) handed++
+        }
+      } catch (e) {
+        this.d.log?.(`desk ${desk}: catch-up of chat ${chatId} failed: ${errText(e)}`)
+      }
+    }
+    if (handed) this.d.log?.(`desk ${desk}: caught up ${handed} missed message(s) from chat history`)
+    return handed
   }
 
   /** For decideSend: the desk that owns this chat, and whether this session holds it. Undefined when no desk owns it. */

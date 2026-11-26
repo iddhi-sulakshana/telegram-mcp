@@ -19,8 +19,12 @@ interface Session {
   disconnectedAt: number | null
   /** The desk this session holds (its id is then deskSessionId(desk)), or null for an ordinary session. */
   desk: string | null
-  /** A desk's newest message id handed over per chat, so a replayed message isn't handed over twice. */
+  /** A desk's newest message id handed over per chat (kept in desks.json). */
   seen: Map<number, number>
+  /** `seen` as desks.json had it when the daemon started: nothing up to it is handed over again. */
+  floor: Map<number, number>
+  /** Message ids handed to the desk since the daemon started, per chat, so a replay isn't handed over twice. */
+  handed: Map<number, Set<number>>
 }
 
 export interface HubOptions {
@@ -88,7 +92,10 @@ export class SessionHub {
       for (const w of d.watches) s.watches.set(w.id, w)
       s.queue = d.queue
       s.dropped = d.dropped
-      for (const [chatId, id] of Object.entries(d.seen)) s.seen.set(Number(chatId), id)
+      for (const [chatId, id] of Object.entries(d.seen)) {
+        s.seen.set(Number(chatId), id)
+        s.floor.set(Number(chatId), id)
+      }
       this.#seq = Math.max(this.#seq, ...d.queue.map(e => e.seq))
     }
   }
@@ -115,6 +122,27 @@ export class SessionHub {
     if (s.desk !== null) this.#dirty = true
   }
 
+  /**
+   * Whether this message is one the desk already has: handed over since the daemon started, or no
+   * newer than the lower bound (a catch-up's `after`, else what desks.json had at start). Ids only
+   * grow within a chat. Not "older than the newest": a catch-up may still bring an older missed one.
+   */
+  #alreadyHanded(s: Session, chatId: number, id: number, after?: number): boolean {
+    if (s.handed.get(chatId)?.has(id)) return true
+    const lower = after ?? s.floor.get(chatId)
+    return lower !== undefined && id <= lower
+  }
+
+  #markHanded(s: Session, chatId: number, id: number): void {
+    let ids = s.handed.get(chatId)
+    if (!ids) s.handed.set(chatId, (ids = new Set()))
+    ids.add(id)
+    // Telegram's own client drops repeats too; this only has to cover a catch-up window.
+    if (ids.size > 2_000) ids.delete(ids.values().next().value!)
+    s.seen.set(chatId, Math.max(s.seen.get(chatId) ?? id, id))
+    this.#touch(s)
+  }
+
   /** The newest message id this chat handed to the desk session, or null. */
   lastSeen(id: string, chatId: number): number | null {
     return this.#sessions.get(id)?.seen.get(chatId) ?? null
@@ -135,6 +163,8 @@ export class SessionHub {
         disconnectedAt: this.#now(),
         desk: null,
         seen: new Map(),
+        floor: new Map(),
+        handed: new Map(),
       }
       this.#sessions.set(id, s)
     }
@@ -412,9 +442,10 @@ export class SessionHub {
 
   /**
    * Routes one incoming Telegram message to every session with a matching watch, or that has the chat
-   * taken over. A desk's chat goes only to the desk's session.
+   * taken over. A desk's chat goes only to the desk's session. `after` is set by a catch-up from the
+   * chat's history: ids up to it are the desk's already.
    */
-  dispatch(msg: IncomingMessage, describe: (msg: IncomingMessage) => Omit<TgEvent, 'seq' | 'watchIds'>): number {
+  dispatch(msg: IncomingMessage, describe: (msg: IncomingMessage) => Omit<TgEvent, 'seq' | 'watchIds'>, opts: { after?: number } = {}): number {
     if (msg.outgoing) return 0
     const takenBy = this.takeoverOf(msg.chatId)
     const desk = this.#deskFor(msg.chat)
@@ -432,10 +463,8 @@ export class SessionHub {
       if (ids.length === 0) continue
       if (s.desk !== null) {
         // Telegram's catch-up (or the history catch-up) can hand over a message the desk already has.
-        const seen = s.seen.get(msg.chatId)
-        if (seen !== undefined && msg.id <= seen) continue
-        s.seen.set(msg.chatId, msg.id)
-        this.#touch(s)
+        if (this.#alreadyHanded(s, msg.chatId, msg.id, opts.after)) continue
+        this.#markHanded(s, msg.chatId, msg.id)
       }
       const event: TgEvent = { ...describe(msg), seq: ++this.#seq, watchIds: ids }
       this.#deliver(s, event)

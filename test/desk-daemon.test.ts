@@ -154,6 +154,39 @@ describe('desk sessions through the daemon', () => {
     expect(after.events.map(e => e.text)).toEqual(['while the session was away', 'while the daemon was down', 'new'])
   })
 
+  test("when the desk comes back, messages Telegram never replayed are caught up from the chat's history", async () => {
+    const home = mkdtempSync(join(tmpdir(), 'tgmcp-desk-gap-'))
+    const a = await start(CONFIG, home)
+    const before = await connect(a.daemon, { sessionId: 's_deskone1', desk: 'desk' })
+    await before.client.call('telegram_watch', { chat: 'leo' })
+    await before.client.call('telegram_watch', { chat: 'anna' })
+    a.tg.emit(LEO.id, 'handled', LEO.id, { id: 3001 })
+    a.tg.emit(ANNA.id, 'anna handled', ANNA.id, { id: 3002 })
+    await settle()
+    expect(before.events.map(e => e.text)).toEqual(['handled', 'anna handled'])
+    before.client.close()
+    await a.daemon.stop()
+
+    // A long outage: Telegram's own catch-up gave nothing back, but the chats' history has the messages.
+    const b = await start(CONFIG, home)
+    const at = (id: number, chatId: number, text: string, outgoing = false) => ({
+      id, chatId, date: new Date().toISOString(), from: outgoing ? b.tg.me : b.tg.peers.get(chatId)!, outgoing, text,
+      media: null, replyToId: null, topicId: null,
+    })
+    b.tg.history.set(LEO.id, [at(3001, LEO.id, 'handled'), at(3003, LEO.id, 'missed 1'), at(3004, LEO.id, 'my reply', true), at(3005, LEO.id, 'missed 2')])
+    // anna is not the desk's own chat: other sessions may watch it, so it is never replayed from history.
+    b.tg.history.set(ANNA.id, [at(3002, ANNA.id, 'anna handled'), at(3006, ANNA.id, 'anna missed')])
+    const after = await connect(b.daemon, { sessionId: 's_desktwo2', desk: 'desk' })
+    await settle()
+    expect(after.events.map(e => e.text)).toEqual(['missed 1', 'missed 2'])
+    // Coming back again finds nothing new.
+    after.client.close()
+    await settle()
+    const again = await connect(b.daemon, { sessionId: 's_deskthr3', desk: 'desk' })
+    await settle()
+    expect(again.events).toHaveLength(0)
+  })
+
   test('a desk name that is not valid is ignored: the proxy is an ordinary session', async () => {
     const { daemon } = await start()
     const odd = await connect(daemon, { sessionId: 's_oddname1', desk: 'Not A Desk' })
