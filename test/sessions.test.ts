@@ -101,6 +101,45 @@ describe('SessionHub', () => {
     expect(hub.has('s1')).toBe(false)
   })
 
+  test('a Monitor that drops the frame (closed socket) loses nothing: the message waits for the next one', () => {
+    const hub = new SessionHub()
+    hub.attachProxy('s1', { label: 'a', channel: false, watches: [] }, sink())
+    hub.addWatch('s1', { chatId: -5, chatLabel: 'g' })
+    // Bun's ServerWebSocket.send returns 0 when the message was dropped.
+    const dead = { got: [] as string[], send: (_d: string) => 0 }
+    hub.attachMonitor('s1', dead)
+    hub.dispatch(msg(-5, 7, 'not lost'), describeMsg)
+    expect(hub.pending('s1')).toBe(1)
+    // A dead Monitor no longer counts as listening.
+    expect(hub.monitorCount('s1')).toBe(0)
+    const live = sink()
+    hub.attachMonitor('s1', live)
+    expect(hub.pending('s1')).toBe(0)
+    expect(live.got[0]).toContain('not lost')
+  })
+
+  test('a channel proxy that drops the frame loses nothing: it is sent again on the next hello', () => {
+    const hub = new SessionHub()
+    hub.attachProxy('s1', { label: 'a', channel: true, watches: [] }, { send: () => 0 })
+    hub.addWatch('s1', { chatId: -5, chatLabel: 'g' })
+    hub.dispatch(msg(-5, 7, 'kept'), describeMsg)
+    expect(hub.pending('s1')).toBe(1)
+    const again = sink()
+    hub.attachProxy('s1', { label: 'a', channel: true, watches: [] }, again)
+    const events = again.got.map(g => JSON.parse(g)).filter(m => m.t === 'event')
+    expect(events.map(e => e.event.text)).toEqual(['kept'])
+    expect(hub.pending('s1')).toBe(0)
+  })
+
+  test('backpressure (-1) counts as sent: Bun queued the frame', () => {
+    const hub = new SessionHub()
+    hub.attachProxy('s1', { label: 'a', channel: false, watches: [] }, sink())
+    hub.addWatch('s1', { chatId: -5, chatLabel: 'g' })
+    hub.attachMonitor('s1', { send: () => -1 })
+    hub.dispatch(msg(-5, 7, 'queued by Bun'), describeMsg)
+    expect(hub.pending('s1')).toBe(0)
+  })
+
   test('queue is bounded', () => {
     const hub = new SessionHub({ maxQueue: 2 })
     hub.attachProxy('s1', { label: 'a', channel: false, watches: [] }, sink())

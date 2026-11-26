@@ -30,6 +30,14 @@ export interface HubOptions {
   deskFor?: (chat: { id: number; username?: string | null }) => string | null
 }
 
+/**
+ * Whether a socket took a frame. Bun's WebSocket send returns the bytes sent, -1 when it queued the
+ * frame (backpressure, still delivered) or 0 when it dropped it. Other sinks return nothing: taken.
+ */
+function accepted(result: unknown): boolean {
+  return result !== 0
+}
+
 export function newId(prefix: string): string {
   const alphabet = 'abcdefghijkmnopqrstuvwxyz23456789'
   const bytes = crypto.getRandomValues(new Uint8Array(8))
@@ -395,15 +403,21 @@ export class SessionHub {
     }))
   }
 
+  /**
+   * Pushes the event to the session's live path, or queues it. A frame the socket dropped (a closing
+   * connection: Bun's send returns 0) is not counted as delivered, so it waits for the next listener.
+   */
   #deliver(s: Session, event: TgEvent) {
-    if (s.channel && s.proxy) {
-      s.proxy.send(JSON.stringify({ t: 'event', event } satisfies ServerMessage))
-      return
-    }
+    if (s.channel && s.proxy && accepted(s.proxy.send(JSON.stringify({ t: 'event', event } satisfies ServerMessage)))) return
     if (s.monitors.size > 0) {
       const frame = formatEvent(event)
-      for (const m of s.monitors) m.send(frame)
-      return
+      let sent = false
+      for (const m of [...s.monitors]) {
+        if (accepted(m.send(frame))) sent = true
+        // A dead Monitor no longer counts as listening; its close event would remove it too.
+        else s.monitors.delete(m)
+      }
+      if (sent) return
     }
     s.queue.push(event)
     if (s.queue.length > this.#maxQueue) {
