@@ -260,6 +260,18 @@ describe('SessionHub', () => {
       expect(hub.isCurrentProxy('s1', p)).toBe(true)
     })
 
+    test("a desk chat's subscribers are only the desk: other sessions' old watches hear nothing", () => {
+      const hub = new SessionHub({ deskFor })
+      hub.attachProxy('s1', { label: 'a', channel: false, watches: [] }, sink())
+      hub.addWatch('s1', { chatId: -5, chatLabel: 'g' })
+      hub.addWatch('s1', { chatId: -6, chatLabel: 'h' })
+      expect(hub.subscribers({ id: -5 })).toEqual([])
+      expect(hub.subscribers(-6)).toEqual(['s1'])
+      hub.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk' }, sink())
+      hub.addWatch('d_desk', { chatId: -5, chatLabel: 'g' })
+      expect(hub.subscribers(-5)).toEqual(['d_desk'])
+    })
+
     test('only the desk session makes a desk chat live', () => {
       const hub = new SessionHub({ deskFor })
       hub.attachProxy('s1', { label: 'a', channel: false, watches: [] }, sink())

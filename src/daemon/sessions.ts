@@ -392,7 +392,15 @@ export class SessionHub {
   }
 
   /** Sessions with at least one watch on this chat. */
-  subscribers(chatId: number): string[] {
+  subscribers(chat: number | ChatKey): string[] {
+    const key = typeof chat === 'number' ? { id: chat } : chat
+    const chatId = key.id
+    // On a desk's chat only the desk hears it; other sessions' watches there are silent.
+    const desk = this.#deskFor(key)
+    if (desk !== null) {
+      const s = this.#sessions.get(deskSessionId(desk))
+      return s && [...s.watches.values()].some(w => w.chatId === chatId) ? [s.id] : []
+    }
     return [...this.#sessions.values()].filter(s => [...s.watches.values()].some(w => w.chatId === chatId)).map(s => s.id)
   }
 

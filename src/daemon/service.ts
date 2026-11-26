@@ -1307,7 +1307,7 @@ export class Service {
     if (now - (this.#lastAck.get(key) ?? 0) < MODERATION_ACK_GAP_MS) return
     const config = this.d.store.get()
     const peer = await this.#peerById(chatId)
-    const rule = decideSend(config, peer, { isWatching: this.d.hub.subscribers(chatId).length > 0 })
+    const rule = decideSend(config, peer, { isWatching: this.d.hub.subscribers(peer).length > 0 })
     if (rule.action !== 'send') return
     this.#lastAck.set(key, now)
     const footed = withFooter(text, config.footer)
@@ -1767,6 +1767,13 @@ export class Service {
         }
         const rule = decideSend(config, g.peer, { isWatching: false })
         if (rule.action === 'block') return fail(`Not created: ${g.label} is blocked (${rule.reason}), so it won't be linked.`)
+        // Linking changes the group, so a desk's group is the desk's to link.
+        const groupDesk = this.#deskCtx(sid, g.peer)
+        if (groupDesk && !groupDesk.mine) {
+          return fail(
+            `Not created: ${g.label} belongs to desk "${groupDesk.owner}", and only the session holding that desk may link it. Hand the request to that session instead.`,
+          )
+        }
         const groupPaused = this.#pauseRefusal(g.peer.id, g.label, 'Not created')
         if (groupPaused) return groupPaused
         // Only the checked title and the id go on the card, not the saved nickname.
@@ -1996,7 +2003,7 @@ export class Service {
       const replies = isListed(config, 'requireApproval', t.peer) || isListed(config, 'blocked', t.peer)
         ? `Replies there follow the stricter rule: ${policyLabel(config, t.peer)}.`
         : 'Your replies there go out without asking while this watch is on.'
-      const others = this.d.hub.subscribers(t.peer.id).filter(id => id !== sid).length
+      const others = this.d.hub.subscribers(t.peer).filter(id => id !== sid).length
       return {
         text: [
           `Watching ${t.label}${from ? `, only messages from ${from.label}` : ''}${topicId ? `, topic ${topicId}` : ''}. Watch id: ${w.id}.`,

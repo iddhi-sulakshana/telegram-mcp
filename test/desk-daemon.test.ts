@@ -7,7 +7,7 @@ import { eventsKey } from '../src/daemon/server'
 import { DaemonClient } from '../src/mcp/daemon-client'
 import { getPaths } from '../src/shared/paths'
 import type { TgEvent } from '../src/shared/protocol'
-import { ANNA, FakeTelegram, LEO } from './fake-telegram'
+import { ANNA, FakeTelegram, LEO, TEAM_QA } from './fake-telegram'
 
 const CONFIG = {
   footer: '',
@@ -25,7 +25,7 @@ afterEach(async () => {
 async function start(config: unknown = CONFIG, home = mkdtempSync(join(tmpdir(), 'tgmcp-desk-'))) {
   const paths = getPaths(home)
   writeFileSync(paths.config, JSON.stringify(config))
-  const tg = new FakeTelegram().add(LEO, ANNA)
+  const tg = new FakeTelegram().add(LEO, ANNA, TEAM_QA)
   const daemon: Daemon = await createDaemon({ paths, port: 0, telegram: tg, log: () => {}, pageBotToken: null })
   cleanup.push(() => daemon.stop())
   return { daemon, tg, paths }
@@ -305,6 +305,21 @@ describe('desk sessions through the daemon', () => {
     expect(r.text).toContain('desk "desk"')
     expect(tg.sent).toHaveLength(0)
     expect((await plain.client.call('telegram_status', {})).result.text).toContain('belongs to desk "desk"')
+  })
+
+  test("another session can't ask to link a desk's supergroup as a new channel's discussion group", async () => {
+    const { daemon } = await start({
+      ...CONFIG,
+      chatCreation: { enabled: true },
+      chats: { ...CONFIG.chats, qa: { id: TEAM_QA.id, name: TEAM_QA.name } },
+      desks: { desk: { chats: ['leo', 'qa'] } },
+    })
+    daemon.service.touchUi(['create'])
+    const plain = await connect(daemon, { sessionId: 's_plainone' })
+    const r = (await plain.client.call('telegram_create_chat', { type: 'channel', title: 'News', discussion: { kind: 'existing', chat: 'qa' } }))
+      .result
+    expect(r.isError).toBe(true)
+    expect(r.text).toContain('desk "desk"')
   })
 
   test('a desk that config.json does not list is ignored: the proxy is an ordinary session', async () => {
