@@ -19,7 +19,10 @@ interface WsData {
 
 export interface ServerOptions {
   port: number
+  /** The bridge token: Claude sessions (MCP proxies, `tgmcp call`) on /bridge, and /status. */
   token: string
+  /** The menu bar and tray apps' token: /ui/* and /admin/* only. */
+  uiToken: string
   /** Shown in /status. */
   secrets: { kind: string; where: string }
   service: Service
@@ -56,9 +59,17 @@ export function eventsKey(token: string, sessionId: string, epoch = ''): string 
   return createHmac('sha256', token).update(epoch ? `events:${sessionId}:${epoch}` : `events:${sessionId}`).digest('hex').slice(0, 32)
 }
 
+/** The menu bar and tray apps' routes, which take the UI token and never the bridge token. */
+export function isUiRoute(pathname: string): boolean {
+  return /^\/(ui|admin)(\/|$)/.test(pathname)
+}
+
 /**
- * Localhost only. Everything except /health needs the token (kept in the OS keystore), which
+ * Localhost only. Everything except /health needs a token (kept in the OS keystore), which
  * also keeps web pages in a browser (which can reach 127.0.0.1) from reading your messages.
+ * There are two: /ui/* and /admin/* take the UI token (the menu bar and tray apps, and the CLI
+ * commands a person runs), everything else the bridge token (Claude sessions). Each is refused
+ * with 403 where the other one belongs; no token, or a wrong one, gets 401.
  * /events also takes its session's own key instead (see eventsKey).
  *
  *   GET  /health                 liveness, no auth
@@ -94,6 +105,7 @@ export function startServer(o: ServerOptions) {
       const bearer = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? null
       // Only the header: a token in a URL ends up in logs, history and transcripts.
       const authed = sameToken(bearer, o.token)
+      const uiAuthed = sameToken(bearer, o.uiToken)
 
       if (url.pathname === '/events') {
         const sid = url.searchParams.get('session')
@@ -112,7 +124,13 @@ export function startServer(o: ServerOptions) {
           ? undefined
           : new Response('expected a websocket\n', { status: 400 })
       }
-      if (!authed) return new Response('unauthorized\n', { status: 401 })
+      // Each token opens only its own routes: the bridge token never opens the apps' routes, and the
+      // UI token never opens /bridge (so it can't act as a session) or /status.
+      const ui = isUiRoute(url.pathname)
+      if (ui ? !uiAuthed : !authed) {
+        const otherToken = ui ? authed : uiAuthed
+        return new Response(otherToken ? 'forbidden: this token is not for this route\n' : 'unauthorized\n', { status: otherToken ? 403 : 401 })
+      }
 
       if (url.pathname === '/bridge') {
         return server.upgrade(req, { data: { kind: 'bridge', sessionId: null } })

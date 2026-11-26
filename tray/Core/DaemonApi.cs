@@ -64,13 +64,16 @@ public sealed record ActionResult(bool Ok, string Text, string? Nickname = null)
 /// <summary>
 /// The daemon's local HTTP API (src/daemon/server.ts), as the menu bar app uses it: GET /ui/state
 /// every 2 s (which also tells the daemon to send approvals here instead of the Claude Code dialog),
-/// POST /ui/approvals/:id and POST /ui/contacts. Only 127.0.0.1, with the token as a bearer.
+/// POST /ui/approvals/:id and POST /ui/contacts. Only 127.0.0.1, with the apps' token ("ui-token") as a
+/// bearer: the daemon refuses the sessions' token on these routes.
 /// Not thread-safe: the app calls it from the UI thread.
 /// </summary>
 public sealed class DaemonApi(HttpClient http, int port, ITokenSource tokens, TimeProvider? time = null)
 {
     public const string NotRunning = "The daemon is not running. Start it with tgmcp daemon.";
     public const string Refused = "The daemon refused the request (token mismatch?).";
+    /// <summary>403: a token the daemon knows, but not the one for these routes (an app and daemon of different versions).</summary>
+    public const string WrongToken = "The daemon refused this app's token. Update the daemon and this app together (tgmcp menubar).";
     /// <summary>Sent on every request: this app shows new-chat requests as Create / Deny, not as a send.</summary>
     public const string FeaturesHeader = "X-Tgmcp-Features";
     public const string Features = "create";
@@ -104,10 +107,10 @@ public sealed class DaemonApi(HttpClient http, int port, ITokenSource tokens, Ti
         {
             using var cts = WithTimeout(ct);
             using var res = await http.SendAsync(Request(HttpMethod.Get, "/ui/state", token), cts.Token);
-            if (res.StatusCode == HttpStatusCode.Unauthorized)
+            if (res.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             {
                 _token = null;
-                return new(null, Refused);
+                return new(null, res.StatusCode == HttpStatusCode.Forbidden ? WrongToken : Refused);
             }
             if (!res.IsSuccessStatusCode) return new(null, $"The daemon answered {(int)res.StatusCode} {res.ReasonPhrase}.");
             return new(Json.ParseState(await res.Content.ReadAsStringAsync(cts.Token)), null);
@@ -201,7 +204,7 @@ public sealed class DaemonApi(HttpClient http, int port, ITokenSource tokens, Ti
         {
             using var cts = WithTimeout(ct);
             using var res = await http.SendAsync(Request(HttpMethod.Get, $"/ui/avatars/{chatId}", token), cts.Token);
-            if (res.StatusCode == HttpStatusCode.Unauthorized) _token = null;
+            if (res.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden) _token = null;
             if (!res.IsSuccessStatusCode) return null;
             var bytes = await res.Content.ReadAsByteArrayAsync(cts.Token);
             return bytes.Length > 0 ? bytes : null;
@@ -223,10 +226,10 @@ public sealed class DaemonApi(HttpClient http, int port, ITokenSource tokens, Ti
         {
             using var cts = WithTimeout(ct);
             using var res = await http.SendAsync(Request(HttpMethod.Post, path, token, body), cts.Token);
-            if (res.StatusCode == HttpStatusCode.Unauthorized)
+            if (res.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             {
                 _token = null;
-                return new(false, Refused);
+                return new(false, res.StatusCode == HttpStatusCode.Forbidden ? WrongToken : Refused);
             }
             if (res.StatusCode == HttpStatusCode.NotFound && notFound is not null) return new(false, notFound);
             Answer? answer = null;

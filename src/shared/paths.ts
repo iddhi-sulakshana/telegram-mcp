@@ -7,9 +7,11 @@ export const DEFAULT_PORT = 47823
 export interface Paths {
   home: string
   config: string
-  /** The next three are only used with TELEGRAM_MCP_SECRET_STORE=file (or found from an older version). */
+  /** The next five are only used with TELEGRAM_MCP_SECRET_STORE=file (or found from an older version). */
   credentials: string
   token: string
+  /** The menu bar and tray apps' token (secret "ui-token"). */
+  uiToken: string
   sessionKey: string
   pageBot: string
   session: string
@@ -31,6 +33,7 @@ export function getPaths(home = process.env.TELEGRAM_MCP_HOME || defaultHome()):
     config: join(home, 'config.json'),
     credentials: join(home, 'credentials.json'),
     token: join(home, 'token'),
+    uiToken: join(home, 'ui-token'),
     sessionKey: join(home, 'session.key'),
     pageBot: join(home, 'page-bot'),
     session: join(home, 'session.db'),

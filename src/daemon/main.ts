@@ -3,7 +3,7 @@ import { firstName } from '../shared/away'
 import { ConfigStore, deskOf, isListed } from '../shared/config'
 import { ensureHome, makeLogger } from '../shared/files'
 import { getPaths, getPort, type Paths } from '../shared/paths'
-import { ensureToken, loadCredentials, openSecretStore, type SecretStore } from '../shared/secrets'
+import { ensureToken, ensureUiToken, loadCredentials, openSecretStore, type SecretStore } from '../shared/secrets'
 import { Approvals } from './approvals'
 import { Pauses } from './moderation'
 import { moderatorCommand } from '../shared/moderation'
@@ -42,6 +42,8 @@ export async function createDaemon(o: DaemonOptions) {
   ensureHome(o.paths)
   const secrets = o.secrets ?? openSecretStore(o.paths)
   const token = await ensureToken(secrets)
+  // The menu bar and tray apps' own token: the bridge token above doesn't open their routes.
+  const uiToken = await ensureUiToken(secrets, token)
   const store = new ConfigStore(o.paths.config, log)
   const tg =
     o.telegram ??
@@ -123,6 +125,7 @@ export async function createDaemon(o: DaemonOptions) {
   const server = startServer({
     port: o.port,
     token,
+    uiToken,
     secrets: { kind: secrets.kind, where: secrets.where },
     service,
     hub,
@@ -214,6 +217,7 @@ export async function createDaemon(o: DaemonOptions) {
   return {
     port,
     token,
+    uiToken,
     store,
     tg,
     hub,

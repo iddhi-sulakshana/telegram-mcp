@@ -6,7 +6,11 @@ import { defaultHome, type Paths } from './paths'
 /**
  * The secrets, and where they live.
  *
- *   token        the local API secret: proxies, the CLI and the menu bar app show it to the daemon
+ *   token        the local API secret for Claude sessions: the MCP proxies and `tgmcp call` show it
+ *                to the daemon on /bridge (and the CLI on /status)
+ *   ui-token     the menu bar and tray apps' own secret, for /ui/* and /admin/* (the CLI commands a
+ *                person runs use it there too). The proxies never read it, and `token` doesn't
+ *                open those routes, nor this one /bridge.
  *   credentials  api_id / api_hash from my.telegram.org, as JSON
  *   session-key  seals the Telegram auth keys inside session.db (see daemon/session-store.ts)
  *   page-bot     the Bot API token of your own pager bot (`tgmcp page setup`), if you set one up
@@ -16,7 +20,7 @@ import { defaultHome, type Paths } from './paths'
  * only used when you ask for them with TELEGRAM_MCP_SECRET_STORE=file, for a machine without a
  * keystore (a headless Linux box, say). There is no silent fallback to files.
  */
-export const SECRET_NAMES = ['token', 'credentials', 'session-key', 'page-bot'] as const
+export const SECRET_NAMES = ['token', 'ui-token', 'credentials', 'session-key', 'page-bot'] as const
 export type SecretName = (typeof SECRET_NAMES)[number]
 
 /** The Keychain "service" (Windows: target prefix, libsecret: the service attribute). */
@@ -56,6 +60,7 @@ export function keychainAccount(name: SecretName, home: string): string {
 
 function fileFor(paths: Paths, name: SecretName): string {
   if (name === 'token') return paths.token
+  if (name === 'ui-token') return paths.uiToken
   if (name === 'credentials') return paths.credentials
   if (name === 'page-bot') return paths.pageBot
   return paths.sessionKey
@@ -220,6 +225,23 @@ export async function ensureToken(store: SecretStore): Promise<string> {
 
 export function readToken(store: SecretStore): Promise<string | null> {
   return store.get('token')
+}
+
+/**
+ * The menu bar and tray apps' token for /ui/* and /admin/*. Created once, like `token`, and never
+ * the same value: one that matches `token` (copied by hand, say) is replaced.
+ */
+export async function ensureUiToken(store: SecretStore, bridgeToken: string): Promise<string> {
+  const existing = await store.get('ui-token')
+  if (existing && existing !== bridgeToken) return existing
+  const token = randomBytes(24).toString('hex')
+  await store.set('ui-token', token)
+  return token
+}
+
+/** Only for what a person runs (the CLI's /ui/* and /admin/* calls); the MCP proxy never reads it. */
+export function readUiToken(store: SecretStore): Promise<string | null> {
+  return store.get('ui-token')
 }
 
 /** TELEGRAM_API_ID / TELEGRAM_API_HASH from the environment win; otherwise the secret store. */

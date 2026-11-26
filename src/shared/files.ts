@@ -5,7 +5,7 @@ import type { Paths } from './paths'
 export function ensureHome(paths: Paths): void {
   mkdirSync(paths.home, { recursive: true, mode: 0o700 })
   chmodSync(paths.home, 0o700)
-  const files = [paths.session, `${paths.session}-wal`, `${paths.session}-shm`, paths.credentials, paths.token, paths.sessionKey]
+  const files = [paths.session, `${paths.session}-wal`, `${paths.session}-shm`, paths.credentials, paths.token, paths.uiToken, paths.sessionKey]
   for (const f of files) {
     if (existsSync(f)) chmodSync(f, 0o600)
   }

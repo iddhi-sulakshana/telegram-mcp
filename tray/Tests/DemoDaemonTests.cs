@@ -8,7 +8,7 @@ public class DemoDaemonTests(DemoDaemon demo) : IClassFixture<DemoDaemon>
 {
     static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    DaemonApi Api() => new(new HttpClient(), demo.Port, new FileTokenSource(Path.Combine(demo.Home, "token")));
+    DaemonApi Api() => new(new HttpClient(), demo.Port, new FileTokenSource(Path.Combine(demo.Home, "ui-token")));
 
     [Fact]
     public async Task Avatars_are_the_demo_photos_or_nothing()
@@ -58,7 +58,7 @@ public class DemoDaemonTests(DemoDaemon demo) : IClassFixture<DemoDaemon>
     [Fact]
     public async Task A_wrong_port_is_reported_as_no_daemon()
     {
-        var r = await new DaemonApi(new HttpClient(), 1, new FileTokenSource(Path.Combine(demo.Home, "token"))).PollAsync(Ct);
+        var r = await new DaemonApi(new HttpClient(), 1, new FileTokenSource(Path.Combine(demo.Home, "ui-token"))).PollAsync(Ct);
 
         Assert.Equal("The daemon is not running. Start it with tgmcp daemon.", r.Problem);
     }
