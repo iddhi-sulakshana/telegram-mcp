@@ -31,7 +31,7 @@ async function start(config: unknown = CONFIG, home = mkdtempSync(join(tmpdir(),
   return { daemon, tg, paths }
 }
 
-async function connect(daemon: Daemon, opts: { sessionId: string; desk?: string }) {
+async function connect(daemon: Daemon, opts: { sessionId: string; desk?: string; startedAt?: number }) {
   const events: TgEvent[] = []
   const client = new DaemonClient({
     target: () => ({ url: `ws://127.0.0.1:${daemon.port}/bridge`, token: daemon.token }),
@@ -39,6 +39,7 @@ async function connect(daemon: Daemon, opts: { sessionId: string; desk?: string 
     label: opts.sessionId,
     channel: true,
     ...(opts.desk ? { desk: opts.desk } : {}),
+    ...(opts.startedAt !== undefined ? { startedAt: opts.startedAt } : {}),
     log: () => {},
   })
   client.onEvent = e => events.push(e)
@@ -47,7 +48,7 @@ async function connect(daemon: Daemon, opts: { sessionId: string; desk?: string 
   const end = Date.now() + 5_000
   while (!client.connected && Date.now() < end) await Bun.sleep(10)
   // The hello is the first frame; a call after it is answered only once the daemon has read it.
-  await client.call('telegram_status', {})
+  await client.call('telegram_status', {}).catch(() => {})
   return { client, events }
 }
 
@@ -87,6 +88,32 @@ describe('desk sessions through the daemon', () => {
     expect(second.events.map(e => e.text)).toEqual(['after the move'])
   })
 
+  test('an older proxy turned away from a desk gets no catch-up and none of its calls work', async () => {
+    const { daemon, tg } = await start()
+    let reads = 0
+    const read = tg.getHistory.bind(tg)
+    tg.getHistory = (chatId, opts) => {
+      reads++
+      return read(chatId, opts)
+    }
+    const newer = await connect(daemon, { sessionId: 's_desknew1', desk: 'desk', startedAt: 2_000 })
+    await newer.client.call('telegram_watch', { chat: 'leo' })
+    tg.emit(LEO.id, 'seen', LEO.id, { id: 6001 })
+    await settle()
+    const older = await connect(daemon, { sessionId: 's_deskold1', desk: 'desk', startedAt: 1_000 })
+    await settle()
+    for (const [tool, args] of [
+      ['telegram_status', {}],
+      ['telegram_confirm_send', { approvalId: 'a_x' }],
+      ['telegram_cancel_send', { approvalId: 'a_x' }],
+    ] as const) {
+      await expect(older.client.call(tool, args)).rejects.toThrow('desk "desk"')
+    }
+    // The newer one still holds it.
+    expect((await newer.client.call('telegram_status', {})).result.text).toContain('Desk: desk')
+    expect(reads).toBe(0)
+  })
+
   test("a desk's Monitor key changes with its holder: the old session's Monitor URL is refused", async () => {
     const { daemon } = await start()
     const events = (key: string) => fetch(`http://127.0.0.1:${daemon.port}/events?session=d_desk&key=${key}`)
@@ -94,7 +121,8 @@ describe('desk sessions through the daemon', () => {
     const oldKey = eventsKey(daemon.token, 'd_desk', daemon.hub.eventsEpoch('d_desk'))
     // The right key gets as far as the upgrade (400: a plain fetch is not a WebSocket).
     expect((await events(oldKey)).status).toBe(400)
-    await Bun.sleep(5)
+    // A key made the ordinary way, without the desk's epoch, never opens a desk's stream.
+    expect((await events(eventsKey(daemon.token, 'd_desk'))).status).toBe(401)
     await connect(daemon, { sessionId: 's_desktwo2', desk: 'desk' })
     expect((await events(oldKey)).status).toBe(401)
     expect((await events(eventsKey(daemon.token, 'd_desk', daemon.hub.eventsEpoch('d_desk')))).status).toBe(400)

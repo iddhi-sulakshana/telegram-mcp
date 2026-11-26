@@ -7,8 +7,10 @@ import type { TgEvent, WatchSpec } from '../shared/protocol'
 /** What the daemon keeps for one desk, so a restart of the daemon or of the desk's Claude session loses nothing. */
 export interface DeskState {
   label: string
-  /** When the proxy holding the desk started (ms); its Monitor key is made from it. */
+  /** When the proxy holding the desk started (ms): of two, the newer holds it. */
   holder: number
+  /** Bumped on every change of holder; the desk's Monitor key is made from it. */
+  epoch: number
   watches: WatchSpec[]
   /** Watched messages no listener has taken yet, oldest first. */
   queue: TgEvent[]
@@ -43,6 +45,7 @@ const FileSchema = z.object({
     z.object({
       label: z.string().default(''),
       holder: z.number().default(0),
+      epoch: z.number().int().nonnegative().default(0),
       watches: z.array(z.looseObject({ id: z.string(), chatId: z.number().int(), chatLabel: z.string(), createdAt: z.number() })).default([]),
       queue: z.array(EventSchema).default([]),
       dropped: z.number().int().nonnegative().default(0),

@@ -282,8 +282,14 @@ export function startServer(o: ServerOptions) {
           const sid = desk ? deskSessionId(desk) : msg.sessionId
           ws.data.sessionId = sid
           const startedAt = typeof msg.startedAt === 'number' && Number.isFinite(msg.startedAt) ? msg.startedAt : 0
-          o.hub.attachProxy(sid, { label: msg.label, channel: msg.channel, watches: msg.watches ?? [], desk, startedAt }, ws)
+          const current = o.hub.attachProxy(sid, { label: msg.label, channel: msg.channel, watches: msg.watches ?? [], desk, startedAt }, ws)
           send(ws, { t: 'welcome', telegram: o.tg.state() })
+          if (!current) {
+            // A newer proxy holds this desk. The connection stays (closing it would only make the proxy
+            // reconnect in a loop); every call on it is refused with an error that says why.
+            o.log(`session ${sid} (${msg.label}) turned away: a newer proxy holds desk ${desk}`)
+            return
+          }
           o.log(`session ${sid} connected (${msg.label}${msg.channel ? ', channel' : ''}${desk ? `, desk ${desk}` : ''})`)
           // A desk that comes back gets what its chats said while nothing could hand it over.
           if (desk) void o.service.catchUpDesk(sid).catch(e => o.log(`desk ${desk}: catch-up failed: ${e instanceof Error ? e.message : String(e)}`))

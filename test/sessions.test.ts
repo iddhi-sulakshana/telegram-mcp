@@ -235,6 +235,24 @@ describe('SessionHub', () => {
       expect(closed).toEqual(['old', 'new'])
     })
 
+    test('two proxies started in the same millisecond: the later hello still takes over cleanly', () => {
+      const hub = new SessionHub({ deskFor })
+      const closed: string[] = []
+      hub.attachProxy('d_desk', { label: 'a', channel: false, watches: [], desk: 'desk', startedAt: 100 }, sink())
+      hub.attachMonitor('d_desk', { send: () => 1, close: () => closed.push('a') } as never)
+      const epoch = hub.eventsEpoch('d_desk')
+      expect(hub.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk', startedAt: 100 }, sink())).toBe(true)
+      expect(closed).toEqual(['a'])
+      expect(hub.eventsEpoch('d_desk')).not.toBe(epoch)
+      // The same proxy saying hello again on its own connection keeps the epoch.
+      const same = sink()
+      hub.attachProxy('d_desk', { label: 'c', channel: false, watches: [], desk: 'desk', startedAt: 300 }, same)
+      const now = hub.eventsEpoch('d_desk')
+      hub.detachProxy('d_desk', same)
+      hub.attachProxy('d_desk', { label: 'c', channel: false, watches: [], desk: 'desk', startedAt: 300 }, same)
+      expect(hub.eventsEpoch('d_desk')).toBe(now)
+    })
+
     test('an ordinary session is always its own current proxy', () => {
       const hub = new SessionHub({ deskFor })
       const p = sink()

@@ -24,6 +24,8 @@ interface Session {
   desk: string | null
   /** For a desk: when its holding proxy started (ms), so the newest-started proxy holds it; 0 if unknown. */
   holderStartedAt: number
+  /** For a desk: bumped on every change of holder; its Monitor key is made from it (eventsEpoch). */
+  epoch: number
   /** A desk's newest message id the daemon saw per chat, heard or not (kept in desks.json). */
   seen: Map<number, number>
   /** `seen` as desks.json had it when the daemon started: nothing up to it is handed over again. */
@@ -112,6 +114,7 @@ export class SessionHub {
       const s = this.#ensure(deskSessionId(desk), d.label || deskSessionId(desk))
       s.desk = desk
       s.holderStartedAt = d.holder
+      s.epoch = d.epoch
       for (const w of d.watches) s.watches.set(w.id, w)
       s.queue = d.queue
       s.dropped = d.dropped
@@ -149,6 +152,7 @@ export class SessionHub {
       out.set(s.desk, {
         label: s.label,
         holder: s.holderStartedAt,
+        epoch: s.epoch,
         watches: [...s.watches.values()],
         // A /reply or moderator notice belongs to the run that sent it (takeovers aren't kept), so it isn't.
         queue: s.queue.filter(e => !e.takeover && !e.moderation),
@@ -227,6 +231,7 @@ export class SessionHub {
         disconnectedAt: this.#now(),
         desk: null,
         holderStartedAt: 0,
+        epoch: 0,
         seen: new Map(),
         floor: new Map(),
         observed: new Map(),
@@ -261,11 +266,14 @@ export class SessionHub {
         this.#log(`desk ${s.desk}: an older proxy (${info.label}) was turned away; a newer one holds it`)
         return false
       }
-      if (started !== s.holderStartedAt) {
+      // Another proxy (also one started in the same millisecond), or a different one after the holder left.
+      // The same proxy saying hello again on its own connection keeps everything.
+      if (replaced || started !== s.holderStartedAt) {
         // A new holder: the Monitors so far are the old holder's, and its Monitor URL stops working (eventsEpoch).
         for (const m of s.monitors) (m as { close?: () => void }).close?.()
         s.monitors.clear()
         s.holderStartedAt = started
+        s.epoch++
         this.#touch(s)
       }
     }
@@ -291,7 +299,7 @@ export class SessionHub {
    */
   eventsEpoch(id: string): string {
     const s = this.#sessions.get(id)
-    return s && s.desk !== null ? String(s.holderStartedAt) : ''
+    return s && s.desk !== null ? `e${s.epoch}` : ''
   }
 
   /**
@@ -306,11 +314,6 @@ export class SessionHub {
   /** The desk this session holds, or null. */
   deskOf(id: string): string | null {
     return this.#sessions.get(id)?.desk ?? null
-  }
-
-  /** The desk that owns this chat (config.json "desks"), or null. */
-  chatDesk(chat: { id: number; username?: string | null }): string | null {
-    return this.#deskFor(chat)
   }
 
   detachProxy(id: string, sink: Sink): void {
