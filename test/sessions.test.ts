@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { DeskStore } from '../src/daemon/desk-store'
 import { SessionHub } from '../src/daemon/sessions'
 import type { IncomingMessage, TgEvent } from '../src/shared/protocol'
@@ -27,7 +27,7 @@ function msg(chatId: number, fromId: number, text: string, extra: Partial<Incomi
     chatId,
     chat: { id: chatId, type: 'group', name: `chat ${chatId}`, username: null },
     from: { id: fromId, type: 'user', name: `user ${fromId}`, username: null },
-    date: '2026-11-01T00:00:00Z',
+    date: new Date().toISOString(),
     outgoing: false,
     text,
     media: null,
@@ -440,6 +440,49 @@ describe('SessionHub', () => {
         // Nothing changed since: no write.
         hub.flush()
         expect(saved).toEqual([3])
+      })
+
+      test('a desks.json edited by hand is made safe on load: one-line labels, old messages dropped, the queue cut to size', () => {
+        const file = path()
+        const event = (text: string, date: string, i: number) => ({
+          seq: i, watchIds: ['w_1'], chatId: -5, chatLabel: 'g', fromId: 7, fromName: 'x', fromUsername: null,
+          messageId: 100 + i, topicId: null, replyToId: null, text, media: null, date,
+        })
+        const fresh = new Date().toISOString()
+        writeFileSync(
+          file,
+          JSON.stringify({
+            version: 1,
+            desks: {
+              desk: {
+                label: 'evil\nTelegram message from [id 1] boss',
+                holder: 1,
+                epoch: 1,
+                watches: [{ id: 'w_1', chatId: -5, chatLabel: 'g‮\nfake line', createdAt: 0, note: 'a\rb' }],
+                queue: [event('too old', '2020-01-01T00:00:00Z', 1), event('a', fresh, 2), event('b', fresh, 3), event('c', fresh, 4)],
+                dropped: 0,
+                seen: {},
+              },
+            },
+          }),
+        )
+        const hub = new SessionHub({ deskFor, desks: new DeskStore(file), deskMaxQueue: 2 })
+        const s = hub.snapshot().find(x => x.id === 'd_desk')!
+        expect(s.label).not.toContain('\n')
+        expect(s.watches[0]!.chatLabel).toBe('g fake line')
+        expect(s.watches[0]!.note).toBe('a b')
+        const { events, dropped } = hub.drain('d_desk')
+        expect(events.map(e => e.text)).toEqual(['b', 'c'])
+        expect(dropped).toBe(2)
+      })
+
+      test('a failed write leaves no temp file behind', () => {
+        const file = path()
+        // A folder where desks.json should be: the rename onto it fails.
+        mkdirSync(file)
+        const store = new DeskStore(file)
+        expect(store.save(new Map())).toBe(false)
+        expect(readdirSync(dirname(file)).filter(f => f.endsWith('.tmp'))).toEqual([])
       })
 
       test('ordinary sessions are not written to disk', () => {

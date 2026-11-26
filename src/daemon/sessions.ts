@@ -116,8 +116,9 @@ export class SessionHub {
       s.holderStartedAt = d.holder
       s.epoch = d.epoch
       for (const w of d.watches) s.watches.set(w.id, w)
-      s.queue = d.queue
-      s.dropped = d.dropped
+      // A file edited by hand, or an older and bigger limit: keep the newest that fit.
+      s.queue = d.queue.slice(-this.#deskMaxQueue)
+      s.dropped = d.dropped + (d.queue.length - s.queue.length)
       for (const [chatId, id] of Object.entries(d.seen)) {
         s.seen.set(Number(chatId), id)
         s.floor.set(Number(chatId), id)
