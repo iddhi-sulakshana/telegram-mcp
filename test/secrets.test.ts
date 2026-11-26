@@ -7,9 +7,12 @@ import {
   FileSecretStore,
   KeychainSecretStore,
   ensureToken,
+  ensureUiToken,
   keychainAccount,
   loadCredentials,
   openSecretStore,
+  readToken,
+  readUiToken,
   secretStoreKind,
   type KeystoreBackend,
 } from '../src/shared/secrets'
@@ -40,6 +43,12 @@ describe('where secrets go', () => {
   test('the default home uses bare names, any other home gets its own entries', () => {
     expect(keychainAccount('token', defaultHome())).toBe('token')
     expect(keychainAccount('token', `${defaultHome()}/`)).toBe('token')
+    expect(keychainAccount('ui-token', defaultHome())).toBe('ui-token')
+  })
+
+  // POSIX: on Windows "/tmp/…" resolves against the current drive (as in the next test).
+  test.skipIf(process.platform === 'win32')('the ui token gets its own entry per home, like the others', () => {
+    expect(keychainAccount('ui-token', '/tmp/tgmcp-demo')).toBe('ui-token@/tmp/tgmcp-demo')
   })
 
   // POSIX: Windows resolves "/tmp/…" against the current drive, so the account reads "C:\\tmp\\…".
@@ -69,6 +78,19 @@ describe('file store', () => {
     expect(await files.delete('token')).toBe(true)
     expect(await files.delete('token')).toBe(false)
     expect(existsSync(paths.token)).toBe(false)
+  })
+
+  test('the ui token is its own file next to the token', async () => {
+    const paths = tempPaths()
+    const files = new FileSecretStore(paths)
+    expect(files.path('ui-token')).toBe(join(paths.home, 'ui-token'))
+    const bridge = await ensureToken(files)
+    const ui = await ensureUiToken(files, bridge)
+    expect(ui).toMatch(/^[0-9a-f]{48}$/)
+    expect(ui).not.toBe(bridge)
+    expect(files.present()).toEqual(['token', 'ui-token'])
+    expect(await readUiToken(files)).toBe(ui)
+    expect(await readToken(files)).toBe(bridge)
   })
 })
 
@@ -135,5 +157,37 @@ describe('keychain store', () => {
     const a = await ensureToken(store)
     expect(a).toMatch(/^[0-9a-f]{48}$/)
     expect(await ensureToken(store)).toBe(a)
+  })
+
+  test('ensureUiToken creates its own token once, never equal to the bridge token', async () => {
+    const kc = new FakeKeystore()
+    const store = new KeychainSecretStore('/tmp/y', { backend: kc })
+    const bridge = await ensureToken(store)
+    const ui = await ensureUiToken(store, bridge)
+    expect(ui).toMatch(/^[0-9a-f]{48}$/)
+    expect(ui).not.toBe(bridge)
+    expect(await ensureUiToken(store, bridge)).toBe(ui)
+    expect(kc.items.get(`telegram-mcp/${keychainAccount('ui-token', '/tmp/y')}`)).toBe(ui)
+    // One set to the bridge token's value is replaced.
+    await store.set('ui-token', bridge)
+    const fresh = await ensureUiToken(store, bridge)
+    expect(fresh).not.toBe(bridge)
+    expect(await readUiToken(store)).toBe(fresh)
+  })
+
+  test('the proxy path reads the bridge token and nothing else', async () => {
+    const asked: string[] = []
+    const kc = new FakeKeystore()
+    const store = new KeychainSecretStore('/tmp/z', { backend: kc })
+    await ensureUiToken(store, await ensureToken(store))
+    const spy = {
+      kind: store.kind,
+      where: store.where,
+      get: (n: Parameters<typeof store.get>[0]) => (asked.push(n), store.get(n)),
+      set: store.set.bind(store),
+      delete: store.delete.bind(store),
+    }
+    expect(await readToken(spy)).toMatch(/^[0-9a-f]{48}$/)
+    expect(asked).toEqual(['token'])
   })
 })
