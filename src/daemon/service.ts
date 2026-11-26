@@ -610,7 +610,12 @@ export class Service {
       result = { text: `Declined ${VIA_TEXT[via]}: the message to ${item.chatLabel} was not sent.` }
     } else {
       // The rules may have changed since the draft was made, and a moderator may have paused the chat.
-      const decision = decideSend(this.d.store.get(), { id: item.chatId, username: item.username }, { isWatching: false })
+      // A desk too: a chat that joined one since belongs to that desk's session only.
+      const decision = decideSend(
+        this.d.store.get(),
+        { id: item.chatId, username: item.username },
+        { isWatching: false, desk: this.#deskCtx(item.sessionId, { id: item.chatId, username: item.username }) },
+      )
       const paused = this.#pauseRefusal(item.chatId, item.chatLabel, 'Not sent')
       if (paused) {
         result = paused
@@ -1095,7 +1100,11 @@ export class Service {
     // A delete only takes something back, so a moderator's pause doesn't stop it; an edit says something new.
     const paused = action === 'edit' ? this.#pauseRefusal(item.chatId, item.chatLabel, 'Not edited') : null
     if (paused) return paused
-    const decision = decideSend(this.d.store.get(), { id: item.chatId, username: item.username }, { isWatching: false })
+    const decision = decideSend(
+      this.d.store.get(),
+      { id: item.chatId, username: item.username },
+      { isWatching: false, desk: this.#deskCtx(item.sessionId, { id: item.chatId, username: item.username }) },
+    )
     if (decision.action === 'block') {
       this.d.log?.(`${action} refused after approval (${decision.reason}): ${changeLogLine(item)}`)
       return fail(`Not ${done} in ${item.chatLabel}: ${decision.reason}.`)
@@ -1485,8 +1494,11 @@ export class Service {
       )
       lines.push(watches.length ? 'Watches:' : 'Watches: none')
       for (const w of watches) {
+        // A watch from before its chat joined another session's desk hears nothing now: say so.
+        const owner = deskOf(store.get(), { id: w.chatId })
+        const silent = owner !== null && owner !== desk ? `, belongs to desk "${owner}": this session hears nothing there` : ''
         lines.push(
-          `  ${w.id}: ${w.chatLabel}${w.fromLabel ? `, only from ${w.fromLabel}` : ''}${w.topicId ? `, topic ${w.topicId}` : ''}${w.note ? ` (${w.note})` : ''}`,
+          `  ${w.id}: ${w.chatLabel}${w.fromLabel ? `, only from ${w.fromLabel}` : ''}${w.topicId ? `, topic ${w.topicId}` : ''}${w.note ? ` (${w.note})` : ''}${silent}`,
         )
       }
       if (watches.length && !hub.isChannel(sid)) {

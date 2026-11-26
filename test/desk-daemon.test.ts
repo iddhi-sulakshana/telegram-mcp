@@ -263,6 +263,22 @@ describe('desk sessions through the daemon', () => {
     expect(after.events.map(e => e.text)).toEqual(['missed'])
   })
 
+  test('a draft made before its chat joined a desk is refused when approved; old watches there say they hear nothing', async () => {
+    const { daemon, tg, paths } = await start({ ...CONFIG, desks: {} })
+    const plain = await connect(daemon, { sessionId: 's_plainone' })
+    await plain.client.call('telegram_watch', { chat: 'anna' })
+    // leo is on autoReply but not watched, so a send waits for approval.
+    const draft = (await plain.client.call('telegram_send_message', { to: 'leo', text: 'waiting' })).result
+    expect(draft.approval).toBeDefined()
+    writeFileSync(paths.config, JSON.stringify({ ...CONFIG, desks: { desk: { chats: ['leo', 'anna'] } } }))
+    daemon.store.reload()
+    const r = await daemon.service.decide(draft.approval!.id, true, 'menubar', null)
+    expect(r.isError).toBe(true)
+    expect(r.text).toContain('desk "desk"')
+    expect(tg.sent).toHaveLength(0)
+    expect((await plain.client.call('telegram_status', {})).result.text).toContain('belongs to desk "desk"')
+  })
+
   test('a desk that config.json does not list is ignored: the proxy is an ordinary session', async () => {
     const { daemon } = await start()
     const other = await connect(daemon, { sessionId: 's_othernm1', desk: 'other' })

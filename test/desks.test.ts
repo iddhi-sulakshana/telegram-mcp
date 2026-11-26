@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { deskOf, parseConfig, rulesMentioning } from '../src/shared/config'
 import { renameContact } from '../src/shared/contacts'
+import { instructions } from '../src/mcp/proxy'
 import { deskName, deskSessionId } from '../src/shared/desks'
 
 const config = parseConfig(
@@ -52,6 +53,16 @@ describe('desks in config.json', () => {
   test('a desk name is lowercase letters, digits, - and _', () => {
     expect(() => parseConfig(JSON.stringify({ desks: { 'Bad Name': { chats: [] } } }))).toThrow()
     expect(() => parseConfig(JSON.stringify({ desks: { 'tg-desk_2': { chats: [] } } }))).not.toThrow()
+  })
+})
+
+describe('what a session is told about desks', () => {
+  test('nothing, when config.json has no desks', () => {
+    expect(instructions(false, [], { hasDesks: false })).not.toContain('desk')
+  })
+  test('how to treat a refusal, when there are desks; and which one it holds, if any', () => {
+    expect(instructions(false, [], { hasDesks: true })).toContain('hand the reply to that session')
+    expect(instructions(false, [], { hasDesks: true, desk: 'desk' })).toContain('This session holds desk "desk"')
   })
 })
 
