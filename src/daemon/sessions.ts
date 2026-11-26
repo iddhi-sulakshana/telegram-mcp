@@ -278,7 +278,9 @@ export class SessionHub {
         for (const m of s.monitors) (m as { close?: () => void }).close?.()
         s.monitors.clear()
         s.holderStartedAt = started
-        s.epoch++
+        // From the clock, never just +1: a desk whose saved state was lost (desks.json set aside, or the desk
+        // taken out and put back) must not reach an epoch an old holder's Monitor URL was made for.
+        s.epoch = Math.max(s.epoch + 1, this.#now())
         this.#touch(s)
       }
     }

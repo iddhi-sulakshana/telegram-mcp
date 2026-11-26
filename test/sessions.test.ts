@@ -254,6 +254,18 @@ describe('SessionHub', () => {
       expect(hub.eventsEpoch('d_desk')).toBe(now)
     })
 
+    test("a desk's epoch never repeats, even when its saved state is lost (an old Monitor URL can't come back to life)", () => {
+      const first = new SessionHub({ deskFor, now: () => 1_000 })
+      first.attachProxy('d_desk', { label: 'a', channel: false, watches: [], desk: 'desk', startedAt: 1 }, sink())
+      first.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk', startedAt: 2 }, sink())
+      const before = Number(first.eventsEpoch('d_desk').slice(1))
+      // desks.json gone (set aside, or the desk taken out and put back): a fresh hub.
+      // Later, as any restart is.
+      const fresh = new SessionHub({ deskFor, now: () => 5_000 })
+      fresh.attachProxy('d_desk', { label: 'c', channel: false, watches: [], desk: 'desk', startedAt: 3 }, sink())
+      expect(Number(fresh.eventsEpoch('d_desk').slice(1))).toBeGreaterThan(before)
+    })
+
     test('an ordinary session is always its own current proxy', () => {
       const hub = new SessionHub({ deskFor })
       const p = sink()
