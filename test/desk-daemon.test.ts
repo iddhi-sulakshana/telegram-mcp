@@ -221,6 +221,8 @@ describe('desk sessions through the daemon', () => {
     const after = await connect(b.daemon, { sessionId: 's_desktwo2', desk: 'desk' })
     await settle()
     expect(after.events.map(e => e.text)).toEqual(['missed 1', 'missed 2'])
+    // Caught up from history, and marked so: the desk can tell they are not live.
+    expect(after.events.map(e => e.caughtUp)).toEqual([true, true])
     // Coming back again finds nothing new.
     after.client.close()
     await settle()
@@ -423,6 +425,19 @@ describe('desk sessions through the daemon', () => {
     const again = new SessionHub({ desks: new DeskStore(join(home, 'desks.json'), m => logs.push(m)) })
     expect(again.watches('d_desk').map(w => w.id)).toEqual(['w_ok'])
     expect(logs).toEqual([])
+  })
+
+  test('telegram_get_events hands over at most 200 at a time and says how many wait', async () => {
+    const { daemon, tg } = await start()
+    daemon.hub.attachProxy('d_desk', { label: 'x', channel: false, watches: [], desk: 'desk', startedAt: 1 }, { send: () => 1 })
+    daemon.hub.addWatch('d_desk', { chatId: LEO.id, chatLabel: 'Leo' })
+    for (let i = 0; i < 250; i++) tg.emit(LEO.id, `m${i}`, LEO.id, { id: 9000 + i })
+    const first = await daemon.service.call('d_desk', 'telegram_get_events', {})
+    expect(first.text.match(/^Telegram message from/gm)).toHaveLength(200)
+    expect(first.text).toContain('50 more waiting')
+    const second = await daemon.service.call('d_desk', 'telegram_get_events', {})
+    expect(second.text.match(/^Telegram message from/gm)).toHaveLength(50)
+    expect(second.text).not.toContain('more waiting')
   })
 
   test('a desk name that is not valid is ignored: the proxy is an ordinary session', async () => {

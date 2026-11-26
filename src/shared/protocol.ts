@@ -106,6 +106,8 @@ export interface TgEvent {
   takeover?: { action: 'start'; instruction: string; minutes: number } | { action: 'stop' }
   /** Set on the notices a moderator's /bots command sends: this chat (or every chat) is paused, or no longer. */
   moderation?: { action: 'pause'; all: boolean; until: string; minutes: number } | { action: 'resume'; all: boolean }
+  /** Handed over from the chat's history after a gap (a desk's catch-up), not live. */
+  caughtUp?: boolean
 }
 
 // ---- tool results ------------------------------------------------------------------

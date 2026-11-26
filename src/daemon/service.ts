@@ -131,6 +131,9 @@ function autoReplyText(c: UiContact): string {
 
 const STICKER_TEXT = '[sticker]'
 
+/** The most watched messages one telegram_get_events call returns; the rest stay queued. */
+const GET_EVENTS_MAX = 200
+
 /** How far back a desk's catch-up reads each of its chats (catchUpDesk). */
 const CATCH_UP_LIMIT = 100
 /** How long a desk's catch-up waits for Telegram to connect, and how often it looks. */
@@ -329,7 +332,7 @@ export class Service {
           if (m.outgoing || m.id <= from) continue
           const msg: IncomingMessage = { ...m, chat: peer }
           if (!heard || moderatorCommand(config, msg, me)) hub.observe(msg)
-          else if (hub.dispatch(msg, x => describeMessage(store, x)) > 0) handed++
+          else if (hub.dispatch(msg, x => describeMessage(store, x), { caughtUp: true }) > 0) handed++
         }
       } catch (e) {
         this.d.log?.(`desk ${desk}: catch-up of chat ${chatId} failed: ${errText(e)}`)
@@ -2029,10 +2032,13 @@ export class Service {
     },
 
     telegram_get_events: async sid => {
-      const { events, dropped } = this.d.hub.drain(sid)
+      // At most GET_EVENTS_MAX per call: a desk's queue can hold far more than one answer should carry.
+      const { events, dropped } = this.d.hub.drain(sid, GET_EVENTS_MAX)
       if (events.length === 0) return { text: dropped ? `${dropped} older messages were dropped (queue full).` : 'No new watched messages.' }
       const parts = events.map(formatEvent)
       if (dropped) parts.unshift(`(${dropped} older messages were dropped because the queue was full.)`)
+      const left = this.d.hub.pending(sid)
+      if (left) parts.push(`(${left} more waiting: call telegram_get_events again.)`)
       return { text: parts.join('\n\n') }
     },
 

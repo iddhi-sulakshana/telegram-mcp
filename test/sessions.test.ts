@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, utimesSync, writeFileS
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DESK_QUEUE_MAX_AGE_MS, DeskStore } from '../src/daemon/desk-store'
-import { SessionHub } from '../src/daemon/sessions'
+import { SessionHub, formatEvent } from '../src/daemon/sessions'
+import { channelPayload } from '../src/mcp/proxy'
 import type { IncomingMessage, TgEvent } from '../src/shared/protocol'
 
 const describeMsg = (m: IncomingMessage): Omit<TgEvent, 'seq' | 'watchIds'> => ({
@@ -601,6 +602,38 @@ describe('SessionHub', () => {
       expect(hub.sweep()).toEqual([])
       expect(hub.isWatching('d_desk', -5)).toBe(true)
       expect(hub.deskOf('d_desk')).toBe('desk')
+    })
+  })
+
+  describe('late messages say so', () => {
+    const event = (over: Partial<TgEvent>): TgEvent => ({
+      seq: 1, watchIds: ['w1'], chatId: -5, chatLabel: 'Team', fromId: 7, fromName: 'Leo', fromUsername: null,
+      messageId: 42, topicId: null, replyToId: null, text: 'hello', media: null, date: new Date().toISOString(), ...over,
+    })
+
+    test('a message older than 10 minutes carries its send time; a fresh one does not', () => {
+      const old = new Date(Date.now() - 30 * 60_000).toISOString()
+      const head = formatEvent(event({ date: old })).split('\n')[0]!
+      expect(head).toContain(`sent ${old} (30 min ago)`)
+      expect(formatEvent(event({})).split('\n')[0]).not.toContain('sent ')
+    })
+
+    test('a message caught up from history says so, in the header and in a channel push', () => {
+      expect(formatEvent(event({ caughtUp: true })).split('\n')[0]).toContain('caught up from history')
+      const old = new Date(Date.now() - 30 * 60_000).toISOString()
+      const meta = channelPayload(event({ caughtUp: true, date: old })).meta
+      expect(meta.caught_up).toBe('true')
+      expect(meta.sent_at).toBe(old)
+    })
+
+    test('drain can take a few at a time, leaving the rest queued', () => {
+      const hub = new SessionHub()
+      hub.attachProxy('s1', { label: 'a', channel: false, watches: [] }, sink())
+      hub.addWatch('s1', { chatId: -5, chatLabel: 'g' })
+      for (const t of ['a', 'b', 'c']) hub.dispatch(msg(-5, 7, t), describeMsg)
+      expect(hub.drain('s1', 2).events.map(e => e.text)).toEqual(['a', 'b'])
+      expect(hub.pending('s1')).toBe(1)
+      expect(hub.drain('s1').events.map(e => e.text)).toEqual(['c'])
     })
   })
 

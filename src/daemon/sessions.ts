@@ -433,10 +433,19 @@ export class SessionHub {
     return this.#sessions.get(id)?.queue.length ?? 0
   }
 
-  drain(id: string): { events: TgEvent[]; dropped: number } {
+  /** Takes the queued events, oldest first: all of them, or at most `max`, leaving the rest queued. */
+  drain(id: string, max?: number): { events: TgEvent[]; dropped: number } {
     const s = this.#sessions.get(id)
     if (!s) return { events: [], dropped: 0 }
-    const out = this.#take(s)
+    let out: { events: TgEvent[]; dropped: number }
+    if (max !== undefined && s.queue.length > max) {
+      out = { events: s.queue.slice(0, max), dropped: s.dropped }
+      s.queue = s.queue.slice(max)
+      s.dropped = 0
+      this.#touch(s)
+    } else {
+      out = this.#take(s)
+    }
     this.#save()
     return out
   }
@@ -561,7 +570,11 @@ export class SessionHub {
    * taken over. A desk's chat goes only to the desk's session, once: a message it already saw (a
    * replay, or a catch-up of one it saw live) goes nowhere.
    */
-  dispatch(msg: IncomingMessage, describe: (msg: IncomingMessage) => Omit<TgEvent, 'seq' | 'watchIds'>): number {
+  dispatch(
+    msg: IncomingMessage,
+    describe: (msg: IncomingMessage) => Omit<TgEvent, 'seq' | 'watchIds'>,
+    opts: { caughtUp?: boolean } = {},
+  ): number {
     if (msg.outgoing) return 0
     const takenBy = this.takeoverOf(msg.chatId)
     const desk = this.#deskFor(msg.chat)
@@ -583,7 +596,7 @@ export class SessionHub {
       const ids = hits.map(w => w.id)
       if (takenBy === s.id) ids.push('takeover')
       if (ids.length === 0) continue
-      const event: TgEvent = { ...describe(msg), seq: ++this.#seq, watchIds: ids }
+      const event: TgEvent = { ...describe(msg), seq: ++this.#seq, watchIds: ids, ...(opts.caughtUp ? { caughtUp: true } : {}) }
       this.#deliver(s, event)
       delivered++
     }
@@ -674,6 +687,22 @@ export class SessionHub {
   }
 }
 
+/** How long before a message counts as late: its header then says when it was sent. */
+const LATE_AFTER_MS = 10 * 60_000
+
+/** When a message was sent, if it is older than LATE_AFTER_MS (normalised, so a stored date can't add a field). */
+export function sentAt(e: TgEvent): { iso: string; minutes: number } | null {
+  const ms = Date.parse(e.date)
+  if (Number.isNaN(ms)) return null
+  const ago = Date.now() - ms
+  return ago > LATE_AFTER_MS ? { iso: new Date(ms).toISOString(), minutes: Math.round(ago / 60_000) } : null
+}
+
+function lateLabel(e: TgEvent): string | null {
+  const s = sentAt(e)
+  return s ? `sent ${s.iso} (${s.minutes} min ago)` : null
+}
+
 /** One readable block per message, for Monitor notifications and get_events. */
 export function formatEvent(e: TgEvent): string {
   // Names sit among the header's fields, so none may bring its own " · " or [nickname].
@@ -705,6 +734,9 @@ export function formatEvent(e: TgEvent): string {
     `message_id ${e.messageId}`,
     e.topicId !== null ? `topic ${e.topicId}` : null,
     e.replyToId !== null ? `reply to ${e.replyToId}` : null,
+    // Not live: say so, so an answer doesn't read as if the message just came in.
+    e.caughtUp ? 'caught up from history' : null,
+    lateLabel(e),
     `watch ${e.watchIds.join(',')}`,
   ]
     .filter(Boolean)
