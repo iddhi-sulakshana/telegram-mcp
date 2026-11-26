@@ -68,7 +68,9 @@ export class DeskStore {
       const file = FileSchema.parse(JSON.parse(readFileSync(this.path, 'utf8')))
       for (const [name, d] of Object.entries(file.desks)) {
         if (deskName(name) === null) continue
-        out.set(name, { ...d, watches: d.watches as WatchSpec[], queue: d.queue as unknown as TgEvent[] })
+        // Notices (/reply, moderator) are never kept; drop any an older version wrote.
+        const queue = (d.queue as unknown as TgEvent[]).filter(e => !e.takeover && !e.moderation)
+        out.set(name, { ...d, watches: d.watches as WatchSpec[], queue })
       }
     } catch (e) {
       // Set aside, not deleted: it may hold messages someone wants to read.
@@ -81,14 +83,17 @@ export class DeskStore {
     return out
   }
 
-  save(desks: Map<string, DeskState>): void {
+  /** Returns whether the file was written. */
+  save(desks: Map<string, DeskState>): boolean {
     try {
       mkdirSync(dirname(this.path), { recursive: true })
       const tmp = `${this.path}.${process.pid}.tmp`
       writeFileSync(tmp, `${JSON.stringify({ version: 1, desks: Object.fromEntries(desks) })}\n`, { mode: 0o600 })
       renameSync(tmp, this.path)
+      return true
     } catch (e) {
-      this.log(`desks.json could not be saved: ${e instanceof Error ? e.message : String(e)}`)
+      this.log(`desks.json could not be saved (tried again on the next change): ${e instanceof Error ? e.message : String(e)}`)
+      return false
     }
   }
 }

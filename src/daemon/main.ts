@@ -55,6 +55,7 @@ export async function createDaemon(o: DaemonOptions) {
     log,
     deskFor: chat => deskOf(store.get(), chat),
     deskConfigured: name => Object.hasOwn(store.get().desks, name),
+    saveDelayMs: 250,
     desks: new DeskStore(join(o.paths.home, 'desks.json'), log),
     ...o.hub,
   })
@@ -215,6 +216,7 @@ export async function createDaemon(o: DaemonOptions) {
       clearInterval(pageTimer)
       away.stop()
       bot?.stop()
+      hub.flush()
       server.stop(true)
       store.close()
       await tg.stop()

@@ -46,6 +46,11 @@ export interface HubOptions {
   deskMaxQueue?: number
   /** Whether config.json still lists this desk. One it doesn't is not restored, and is swept like an ordinary session. */
   deskConfigured?: (name: string) => boolean
+  /**
+   * Batch desks.json writes this long (0: write at once). What a crash loses meanwhile, the next
+   * start's catch-up from history brings back. flush() writes at once (the daemon calls it on stop).
+   */
+  saveDelayMs?: number
 }
 
 /**
@@ -77,6 +82,8 @@ export class SessionHub {
   readonly #desks: DeskStore | null
   readonly #deskMaxQueue: number
   readonly #deskConfigured: (name: string) => boolean
+  readonly #saveDelayMs: number
+  #saveTimer: ReturnType<typeof setTimeout> | null = null
   /** A desk's state changed since desks.json was last written. */
   #dirty = false
   #seq = 0
@@ -94,6 +101,7 @@ export class SessionHub {
     this.#desks = opts.desks ?? null
     this.#deskMaxQueue = opts.deskMaxQueue ?? 1000
     this.#deskConfigured = opts.deskConfigured ?? (() => true)
+    this.#saveDelayMs = opts.saveDelayMs ?? 0
     // Desks known from before a restart: their watches apply, and their queue fills, before any proxy is back.
     for (const [desk, d] of this.#desks?.load() ?? []) {
       // A desk taken out of config.json since is dropped, with its queue (desks.json is rewritten on the next change).
@@ -118,7 +126,23 @@ export class SessionHub {
   /** Writes desks.json when a desk's state changed. Called at the end of each public change. */
   #save(): void {
     if (!this.#dirty || !this.#desks) return
-    this.#dirty = false
+    if (this.#saveDelayMs <= 0) return this.flush()
+    if (this.#saveTimer) return
+    this.#saveTimer = setTimeout(() => {
+      this.#saveTimer = null
+      this.flush()
+    }, this.#saveDelayMs)
+    // Never keeps the daemon alive by itself; stop() flushes.
+    ;(this.#saveTimer as { unref?: () => void }).unref?.()
+  }
+
+  /** Writes desks.json now if a desk changed. A write that fails stays pending and is tried again on the next change or flush. */
+  flush(): void {
+    if (this.#saveTimer) {
+      clearTimeout(this.#saveTimer)
+      this.#saveTimer = null
+    }
+    if (!this.#dirty || !this.#desks) return
     const out = new Map<string, DeskState>()
     for (const s of this.#sessions.values()) {
       if (s.desk === null) continue
@@ -126,12 +150,13 @@ export class SessionHub {
         label: s.label,
         holder: s.holderStartedAt,
         watches: [...s.watches.values()],
-        queue: s.queue,
+        // A /reply or moderator notice belongs to the run that sent it (takeovers aren't kept), so it isn't.
+        queue: s.queue.filter(e => !e.takeover && !e.moderation),
         dropped: s.dropped,
         seen: Object.fromEntries([...s.seen].map(([chatId, id]) => [String(chatId), id])),
       })
     }
-    this.#desks.save(out)
+    if (this.#desks.save(out)) this.#dirty = false
   }
 
   #touch(s: Session): void {

@@ -375,6 +375,43 @@ describe('SessionHub', () => {
         expect(new SessionHub({ deskFor, desks: new DeskStore(file) }).has('d_gone')).toBe(false)
       })
 
+      test('takeover and moderation notices are not kept across a restart (they belong to the run that sent them)', () => {
+        const file = path()
+        const hub = new SessionHub({ deskFor, desks: new DeskStore(file) })
+        hub.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk' }, sink())
+        hub.addWatch('d_desk', { chatId: -5, chatLabel: 'g' })
+        hub.dispatch(msg(-5, 7, 'kept'), describeMsg)
+        hub.moderate(-5, { ...base, moderation: { action: 'pause', all: false, until: 'later', minutes: 30 } }, false)
+        expect(hub.pending('d_desk')).toBe(2)
+        expect(new SessionHub({ deskFor, desks: new DeskStore(file) }).drain('d_desk').events.map(e => e.text)).toEqual(['kept'])
+      })
+
+      test('a save that failed is tried again; with a delay, saves are batched and flush() writes at once', () => {
+        const saved: number[] = []
+        let fail = true
+        const store = Object.assign(new DeskStore(path()), {
+          save: (desks: Map<string, { queue: unknown[] }>) => {
+            if (fail) return false
+            saved.push(desks.get('desk')!.queue.length)
+            return true
+          },
+        }) as unknown as DeskStore
+        const hub = new SessionHub({ deskFor, desks: store, saveDelayMs: 60_000 })
+        hub.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk' }, sink())
+        hub.addWatch('d_desk', { chatId: -5, chatLabel: 'g' })
+        for (const t of ['a', 'b', 'c']) hub.dispatch(msg(-5, 7, t), describeMsg)
+        // Batched: nothing written yet.
+        expect(saved).toEqual([])
+        hub.flush()
+        expect(saved).toEqual([])
+        fail = false
+        hub.flush()
+        expect(saved).toEqual([3])
+        // Nothing changed since: no write.
+        hub.flush()
+        expect(saved).toEqual([3])
+      })
+
       test('ordinary sessions are not written to disk', () => {
         const file = path()
         const hub = new SessionHub({ deskFor, desks: new DeskStore(file) })
