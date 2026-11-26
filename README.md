@@ -119,6 +119,8 @@ Downloads go to `~/Downloads/telegram-mcp/<chat>/` (`TELEGRAM_MCP_DOWNLOADS`), n
 
 **chatCreation** lets sessions ask to create channels and supergroups; it is off by default. See [Creating chats](#creating-chats).
 
+**desks** give chats to one named session, so no two sessions answer the same chat and a restart loses nothing; none by default. See [Desks](#desks-one-session-per-chat).
+
 **/reply** hands one chat to the session that called `telegram_answer_reply`, for two hours or until `/reply stop`. Typing `/reply` in that chat counts as your approval, so the session's replies there go out without asking even when the chat is on `requireApproval`; `blocked` still refuses, and files still ask. Only a `/reply` you type on your phone or desktop counts: messages the daemon sent itself are ignored, and Claude cannot send a message that starts with `/reply`, formatted or not.
 
 **autoReply** chats are the ones Claude sessions may listen to. A session subscribes with `telegram_watch` and stays subscribed until it says stop. Every incoming message from that chat goes to every subscribed session, and each one decides how to reply (the auto reply happens on the Claude side). While subscribed, a session's replies to that chat go out without approval, unless the chat is also on `requireApproval` or `blocked`.
@@ -187,7 +189,33 @@ Nothing is sent unless you accept. Drafts expire after 20 minutes. The rules are
 2. **Channel push** (optional: `tgmcp mcp --channel`, plus `claude --dangerously-load-development-channels server:<name>`): messages appear in the session by themselves as `<channel>` events, with no Monitor needed. This uses Claude Code's channels research preview.
 3. **Queue**: `telegram_get_events` drains it. Every other tool result also mentions when messages are waiting.
 
-A session's watches outlive a daemon restart, because the proxy re-sends them. They also outlive a proxy blip for 5 minutes. They end when the Claude session ends.
+A session's watches outlive a daemon restart, because the proxy re-sends them. They also outlive a proxy blip for 5 minutes. They end when the Claude session ends. A message sent to a Monitor or channel whose socket was already closing stays queued for the next one. Messages waiting in an ordinary session's queue are kept in memory only; a desk keeps them on disk (below).
+
+## Desks (one session per chat)
+
+With several sessions watching the same chats, each gets every message, and two of them may answer it. A **desk** gives a set of chats to one named session instead. **None by default**: without a `desks` block nothing changes. You list the chats in `config.json` (it applies as soon as you save):
+
+```jsonc
+"desks": {
+  "desk": { "chats": ["leo", "team-qa", -1001234567890] }   // nicknames, @usernames or ids, as in the rules lists
+}
+```
+
+and start the one session that holds the desk with `--desk <name>` on its MCP server, for example as a project-scoped server in that session's folder (the project entry replaces the user-scoped `tg` there):
+
+```sh
+claude mcp add --scope project tg -- tgmcp mcp --desk desk
+```
+
+`TELEGRAM_MCP_DESK=desk` does the same. A desk name is 1 to 32 lowercase letters, digits, `-` and `_`; any other name is ignored and the session starts as an ordinary one.
+
+- **Only the desk hears its chats.** A desk's chats reach only the desk's session, even if others watch them, and `/reply` typed in one hands it to the desk's session. Other sessions can't watch, send, send files or stickers, edit, delete or make topics there: they get an error naming the desk, so they hand their reply to it instead. Chats on no desk work as before. The desk still watches its chats with `telegram_watch`, so `autoReply` and the sender and topic filters apply as usual.
+- **No extra permission.** A desk is routing, not an approval: its own sends follow the lists like any session's (`requireApproval` asks, `autoReply` only while it watches, files always ask, `blocked` refuses). The name a proxy gives is taken on trust, like anything a proxy holding the daemon's token says. The nicknames a desk lists are guarded like the ones the rules use: a session can't repoint them with `telegram_save_chat`.
+- **One session per desk.** Every proxy started with the same desk speaks as one session, `d_<name>`. The newest one holds it: a session started later with the same `--desk` takes the desk over, and calls from the older one are refused with an error that says so.
+- **Nothing is lost across restarts.** The desk's watches, its undelivered messages (up to 1000) and the newest message id it got from each chat are kept in `desks.json` in the daemon's folder (readable only by you). A Claude restart or `/mcp` reconnect keeps the desk's watches, and its Monitor URL stays the same. After a daemon restart the desk's watches apply before any proxy is back, so the messages Telegram replays right at the start are queued for it. A message the desk already got is not handed over again. When the desk's proxy says hello, the daemon also reads the history of each of the desk's own chats (up to 100 messages) and hands over any incoming message newer than the last one it got, oldest first: that covers what Telegram's own catch-up can't after a long outage. A desk is never swept. A `desks.json` that can't be read is moved to `desks.json.bad`.
+- **Without the Monitor.** With channel push (`tgmcp mcp --channel --desk desk`, and `claude --dangerously-load-development-channels server:tg` when starting the desk's session) messages arrive by themselves, so there is no Monitor to start again every 30 minutes. This uses Claude Code's channels research preview; try it on your platform before you rely on it.
+
+`telegram_status` shows the desk a session holds and the chats it owns, and `/status` lists it with the sessions.
 
 ## Pages
 

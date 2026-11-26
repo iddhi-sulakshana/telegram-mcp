@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { deskOf, parseConfig, rulesMentioning } from '../src/shared/config'
 import { deskName, deskSessionId } from '../src/shared/desks'
 
@@ -32,6 +34,11 @@ describe('desks in config.json', () => {
     // Else a session could repoint "leo" (telegram_save_chat) and move the desk to another chat.
     expect(rulesMentioning(config, 'LEO')).toEqual(['desks.desk'])
     expect(rulesMentioning(config, 'qa')).toEqual([])
+  })
+
+  test('the example config has a desk that owns leo', () => {
+    const example = parseConfig(readFileSync(join(import.meta.dir, '../config.example.json'), 'utf8'))
+    expect(deskOf(example, { id: example.chats.leo!.id })).toBe('desk')
   })
 
   test('a desk name is lowercase letters, digits, - and _', () => {

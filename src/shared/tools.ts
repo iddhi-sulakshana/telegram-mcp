@@ -222,7 +222,7 @@ export const TOOLS = {
   },
   telegram_watch: {
     description:
-      'Subscribe this session to a chat on the autoReply list: every new incoming message is pushed to every subscribed session until it calls telegram_unwatch (or ends), and replies there go out without approval meanwhile. Optionally only messages from one sender, or one forum topic.',
+      'Subscribe this session to a chat on the autoReply list: every new incoming message is pushed to every subscribed session until it calls telegram_unwatch (or ends), and replies there go out without approval meanwhile. Optionally only messages from one sender, or one forum topic. A chat that belongs to a desk (config.json "desks") can only be watched by the session holding that desk.',
     input: z.object({
       chat: chatRef,
       from: chatRef.optional().describe('Only messages from this person (useful in groups).'),
