@@ -108,7 +108,7 @@ describe('GET /ui/avatars/:chatId', () => {
     const tg = new FakeTelegram().add(LEO, ANNA, LEONARDO)
     tg.photos.set(LEO.id, JPEG)
     const d = await createDaemon({ paths, port: 0, telegram: tg, log: () => {}, pageBotToken: null })
-    const get = (path: string, headers: Record<string, string> = { authorization: `Bearer ${d.token}` }) =>
+    const get = (path: string, headers: Record<string, string> = { authorization: `Bearer ${d.uiToken}` }) =>
       fetch(`http://127.0.0.1:${d.port}${path}`, { headers })
     return { d, tg, get }
   }
@@ -119,7 +119,7 @@ describe('GET /ui/avatars/:chatId', () => {
     expect(r.status).toBe(200)
     expect(r.headers.get('content-type')).toBe('image/jpeg')
     expect([...new Uint8Array(await r.arrayBuffer())]).toEqual([...JPEG])
-    const again = await get(`/ui/avatars/${LEO.id}`, { authorization: `Bearer ${d.token}`, 'if-none-match': r.headers.get('etag')! })
+    const again = await get(`/ui/avatars/${LEO.id}`, { authorization: `Bearer ${d.uiToken}`, 'if-none-match': r.headers.get('etag')! })
     expect(again.status).toBe(304)
     expect((await get(`/ui/avatars/${ANNA.id}`)).status).toBe(404)
     expect(tg.photoCalls).toEqual([LEO.id, ANNA.id])

@@ -79,10 +79,10 @@ describe('the footer in the daemon', () => {
     const d = await createDaemon({ paths, port: 0, telegram: tg, log: () => {}, pageBotToken: null })
     return { d, paths, tg }
   }
-  const post = (d: { port: number; token: string }, body: unknown, auth = true) =>
+  const post = (d: { port: number; uiToken: string }, body: unknown, auth = true) =>
     fetch(`http://127.0.0.1:${d.port}/ui/footer`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', ...(auth ? { authorization: `Bearer ${d.token}` } : {}) },
+      headers: { 'content-type': 'application/json', ...(auth ? { authorization: `Bearer ${d.uiToken}` } : {}) },
       body: JSON.stringify(body),
     })
 

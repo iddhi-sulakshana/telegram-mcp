@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline/promises'
 import { ensureHome } from './shared/files'
 import { getPaths, getPort } from './shared/paths'
-import { FileSecretStore, loadCredentials, openSecretStore, readToken, saveCredentials } from './shared/secrets'
+import { FileSecretStore, loadCredentials, openSecretStore, readToken, readUiToken, saveCredentials } from './shared/secrets'
 import { ConfigStore, type Config } from './shared/config'
 import { applyAwayPatch, awaySummary, firstName, parseAwayArgs, renderAwayMessage, scheduleSummary } from './shared/away'
 import { readDaemonReply } from './shared/daemon-reply'
@@ -39,8 +39,14 @@ const HELP = `tgmcp ${VERSION}: always-on Telegram daemon + per-session MCP brid
 Files live in ${getPaths().home} (override with TELEGRAM_MCP_HOME). Port ${getPort()} (TELEGRAM_MCP_PORT).
 Secrets (login key, API token, api_hash) live in the OS keystore; TELEGRAM_MCP_SECRET_STORE=file keeps them in files.`
 
-async function daemonFetch(path: string, init?: RequestInit, timeoutMs = 3_000): Promise<Response> {
-  const token = await readToken(openSecretStore(getPaths()))
+/**
+ * A call to the daemon's local API from a command a person runs. `auth` picks the token: "ui" for
+ * /ui/* and /admin/* (the menu bar and tray apps' token), "bridge" for /status. The daemon refuses
+ * each one on the other's routes.
+ */
+async function daemonFetch(auth: 'ui' | 'bridge', path: string, init?: RequestInit, timeoutMs = 3_000): Promise<Response> {
+  const secrets = openSecretStore(getPaths())
+  const token = await (auth === 'ui' ? readUiToken(secrets) : readToken(secrets))
   return fetch(`http://127.0.0.1:${getPort()}${path}`, {
     ...init,
     headers: { ...(init?.headers ?? {}), authorization: `Bearer ${token ?? ''}` },
@@ -54,7 +60,7 @@ async function daemonFetch(path: string, init?: RequestInit, timeoutMs = 3_000):
  */
 async function awayName(): Promise<string | null> {
   try {
-    const res = await daemonFetch('/ui/state')
+    const res = await daemonFetch('ui', '/ui/state')
     if (res.ok) {
       const body = (await res.json()) as { telegram?: { me?: { name?: unknown } | null } }
       const me = body.telegram?.me
@@ -142,7 +148,7 @@ async function bots(args: string[]) {
       return
     }
     try {
-      const res = await daemonFetch('/ui/bots/resume', {
+      const res = await daemonFetch('ui', '/ui/bots/resume', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(arg === undefined ? {} : { chatId: Number(arg) }),
@@ -166,7 +172,7 @@ async function bots(args: string[]) {
   console.log(`"/bots stop" lasts ${m.defaultMinutes} min unless they say (at most ${m.maxMinutes} min).`)
   try {
     // /status, not /ui/state: reading that one counts as the menu bar being open.
-    const res = await daemonFetch('/status')
+    const res = await daemonFetch('bridge', '/status')
     if (!res.ok) return
     const st = (await res.json()) as { moderation?: { appliesHere: boolean; pauses: { chatId: number | null; chatLabel: string; until: string; byName: string; by: number }[] } }
     if (!st.moderation) return
@@ -252,7 +258,7 @@ async function status() {
     return
   }
   try {
-    const res = await daemonFetch('/status')
+    const res = await daemonFetch('bridge', '/status')
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     body = (await res.json()) as typeof body
   } catch (e) {
@@ -292,7 +298,7 @@ async function login(askCredentials: boolean) {
   // once can get the session killed by Telegram.
   let connectedAs: string | null = null
   try {
-    const res = await daemonFetch('/status')
+    const res = await daemonFetch('bridge', '/status')
     const body = (await res.json()) as { telegram: { phase: string; me: { name: string } | null } }
     if (body.telegram.phase === 'connected') connectedAs = body.telegram.me?.name ?? 'your account'
   } catch {}
@@ -333,7 +339,7 @@ async function login(askCredentials: boolean) {
   ensureHome(paths) // tighten the new session files to 0600
 
   try {
-    await daemonFetch('/admin/reconnect', { method: 'POST' })
+    await daemonFetch('ui', '/admin/reconnect', { method: 'POST' })
     console.log('Told the daemon to connect. Check with `tgmcp status`.')
   } catch {
     console.log('The daemon is not running. Start it with `tgmcp install`.')
@@ -360,7 +366,7 @@ async function pageSetup() {
 
 async function pageTest() {
   // The daemon answers once the bot has tried the phone, which can take its full 10 s timeout.
-  const res = await daemonFetch('/ui/pages/test', { method: 'POST' }, 15_000)
+  const res = await daemonFetch('ui', '/ui/pages/test', { method: 'POST' }, 15_000)
   const body = await readDaemonReply(res)
   console.log(body.text)
   if (!body.ok) process.exitCode = 1

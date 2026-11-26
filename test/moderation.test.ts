@@ -657,8 +657,8 @@ describe('moderator commands in the daemon', () => {
     say(LEO_MOD, '/bots stop')
     await settle()
     const base = `http://127.0.0.1:${d.port}`
-    const auth = { authorization: `Bearer ${d.token}`, 'content-type': 'application/json' }
-    const st = (await (await fetch(`${base}/status`, { headers: auth })).json()) as { moderation: { pauses: { chatId: number }[] } }
+    const auth = { authorization: `Bearer ${d.uiToken}`, 'content-type': 'application/json' }
+    const st = (await (await fetch(`${base}/status`, { headers: { authorization: `Bearer ${d.token}` } })).json()) as { moderation: { pauses: { chatId: number }[] } }
     expect(st.moderation.pauses.map(p => p.chatId)).toEqual([TEAM_QA.id])
     expect((await fetch(`${base}/ui/bots/resume`, { method: 'POST', body: '{}' })).status).toBe(401)
     expect((await fetch(`${base}/ui/bots/resume`, { method: 'POST', headers: auth, body: '{"chatId":"x"}' })).status).toBe(400)

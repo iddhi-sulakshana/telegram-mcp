@@ -362,7 +362,7 @@ describe('proxy <-> daemon', () => {
   })
 
   test('menu bar approvals: the tool call waits for the click', async () => {
-    const token = daemon.token
+    const token = daemon.uiToken
     const ui = (path: string, init?: RequestInit) =>
       fetch(`http://127.0.0.1:${port}${path}`, { ...init, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' } })
     // The menu bar app polls; that is what makes approvals go to it instead of the dialog.
@@ -399,9 +399,9 @@ describe('proxy <-> daemon', () => {
 
   test('creating a chat: the call waits for the menu bar, then makes the channel and its group', async () => {
     // A menu bar or tray app new enough to show new-chat cards says so on every request.
-    const headers = { authorization: `Bearer ${daemon.token}`, 'content-type': 'application/json', 'x-tgmcp-features': 'create' }
+    const headers = { authorization: `Bearer ${daemon.uiToken}`, 'content-type': 'application/json', 'x-tgmcp-features': 'create' }
     const ui = (path: string, init?: RequestInit) => fetch(`http://127.0.0.1:${port}${path}`, { ...init, headers })
-    const oldApp = (path: string) => fetch(`http://127.0.0.1:${port}${path}`, { headers: { authorization: `Bearer ${daemon.token}` } })
+    const oldApp = (path: string) => fetch(`http://127.0.0.1:${port}${path}`, { headers: { authorization: `Bearer ${daemon.uiToken}` } })
     const original = readFileSync(paths.config, 'utf8')
     writeFileSync(paths.config, JSON.stringify({ ...JSON.parse(original), chatCreation: { enabled: true } }))
     const client = await spawnProxy()
@@ -442,7 +442,7 @@ describe('proxy <-> daemon', () => {
 
   test('menu bar contacts: edits over http change what a session may do', async () => {
     const ui = (path: string, init?: RequestInit) =>
-      fetch(`http://127.0.0.1:${port}${path}`, { ...init, headers: { authorization: `Bearer ${daemon.token}`, 'content-type': 'application/json' } })
+      fetch(`http://127.0.0.1:${port}${path}`, { ...init, headers: { authorization: `Bearer ${daemon.uiToken}`, 'content-type': 'application/json' } })
     const edit = (body: object) => ui('/ui/contacts', { method: 'POST', body: JSON.stringify(body) })
     const contact = async (nick: string) =>
       ((await (await ui('/ui/state')).json()) as { contacts: { nickname: string; sendMode: string; autoReply: boolean }[] }).contacts.find(
@@ -504,6 +504,7 @@ describe('proxy <-> daemon', () => {
     await expect(openWs(`ws://127.0.0.1:${port}/events?session=s_query123&token=${t}`)).rejects.toThrow()
     expect((await fetch(`http://127.0.0.1:${port}/status?token=${t}`)).status).toBe(401)
     expect((await fetch(`http://127.0.0.1:${port}/ui/state?token=${t}`)).status).toBe(401)
+    expect((await fetch(`http://127.0.0.1:${port}/ui/state?token=${daemon.uiToken}`)).status).toBe(401)
     // The same token in the header works.
     const ws = await openWs(`ws://127.0.0.1:${port}/bridge`, { authorization: `Bearer ${t}` })
     ws.close()

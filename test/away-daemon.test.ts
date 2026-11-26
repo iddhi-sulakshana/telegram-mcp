@@ -187,10 +187,10 @@ describe('tgmcp away', () => {
 })
 
 describe('POST /ui/away', () => {
-  const call = (d: { port: number; token: string }, body: unknown, auth = true) =>
+  const call = (d: { port: number; uiToken: string }, body: unknown, auth = true) =>
     fetch(`http://127.0.0.1:${d.port}/ui/away`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', ...(auth ? { authorization: `Bearer ${d.token}` } : {}) },
+      headers: { 'content-type': 'application/json', ...(auth ? { authorization: `Bearer ${d.uiToken}` } : {}) },
       body: JSON.stringify(body),
     })
 
@@ -205,7 +205,7 @@ describe('POST /ui/away', () => {
       const { daemon } = await daemonAway({})
       const ok = await call(daemon, { until: '07:30' })
       expect(ok.status).toBe(200)
-      const state = (await (await fetch(`http://127.0.0.1:${daemon.port}/ui/state`, { headers: { authorization: `Bearer ${daemon.token}` } })).json()) as {
+      const state = (await (await fetch(`http://127.0.0.1:${daemon.port}/ui/state`, { headers: { authorization: `Bearer ${daemon.uiToken}` } })).json()) as {
         away: { until: string; schedules: { id: string; until: string }[] }
       }
       expect(state.away.until).toBe('07:30')
