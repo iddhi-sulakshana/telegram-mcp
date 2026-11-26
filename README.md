@@ -57,12 +57,13 @@ API credentials come from `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` if set, otherw
 
 ## Secrets
 
-Nothing secret is kept in a plain file. Three secrets go to the operating system's keystore through `Bun.secrets`, under the service `telegram-mcp`: the login Keychain on macOS, Credential Manager on Windows, and the Secret Service (GNOME Keyring, KWallet, via libsecret) on Linux.
+Nothing secret is kept in a plain file. Four secrets go to the operating system's keystore through `Bun.secrets`, under the service `telegram-mcp`: the login Keychain on macOS, Credential Manager on Windows, and the Secret Service (GNOME Keyring, KWallet, via libsecret) on Linux.
 
 | Secret | What it is |
 | --- | --- |
 | `session-key` | Encrypts the Telegram auth key inside `session.db` (AES-256-GCM) |
-| `token` | Shared secret for the local API, so web pages and other users can't talk to the daemon. Clients send it in the `Authorization: Bearer` header, also on WebSocket upgrades; a token in the URL is refused |
+| `token` | Claude sessions' secret for the local API (`/bridge`, `/events`, `/status`), so web pages and other users can't talk to the daemon. The MCP proxies and `tgmcp call` read it. Clients send it in the `Authorization: Bearer` header, also on WebSocket upgrades; a token in the URL is refused |
+| `ui-token` | The menu bar and tray apps' own secret, for `/ui/*` and `/admin/*` (the CLI commands that call those routes use it too). The daemon makes it on start. `token` doesn't open those routes (403), `ui-token` doesn't open `/bridge` or `/status` (403), and the MCP proxies never read it. Sent the same way, in the `Authorization: Bearer` header |
 | `credentials` | api_id / api_hash |
 
 **Why the session key matters.** A Telegram auth key *is* your login: whoever copies it is you, with no code and no 2FA asked. `session.db` still holds the peer cache and update state, but its auth key rows are sealed with `session-key`. A copy of the folder alone (a backup, a synced dotfiles repo, a stolen disk image, or an infostealer that grabs `~/.config`) doesn't give anyone your account.
@@ -71,9 +72,11 @@ Nothing secret is kept in a plain file. Three secrets go to the operating system
 
 **Upgrading from an older version.** On its first start the daemon moves `token` and `credentials.json` into the keystore, checks they read back, and deletes the files. It seals the auth key in `session.db` and scrubs the old copy (secure delete, `VACUUM`, WAL truncated). The token value stays the same, so the Monitor URLs of running sessions keep working. Proxies and the menu bar app started before the upgrade still look for the file: run `/mcp` → reconnect in open Claude sessions and `tgmcp menubar` once. The unsealed key may still sit in older backups. To retire it, end the session in Telegram (Settings → Devices) and run `tgmcp login` again.
 
-**The menu bar app** reads the token from the Keychain itself. The first time, and again after each rebuild (`tgmcp menubar`), macOS asks whether "TelegramMCPBar" may use the "telegram-mcp" item: choose **Always Allow**.
+**The menu bar app** reads `ui-token` from the Keychain itself. The first time, and again after each rebuild (`tgmcp menubar`), macOS asks whether "TelegramMCPBar" may use the "telegram-mcp" item: choose **Always Allow**.
 
-**No keystore?** On a machine without one (a headless Linux box, say), set `TELEGRAM_MCP_SECRET_STORE=file` for the daemon, the proxies and the CLI. The secrets then go to `token`, `credentials.json` and `session.key` in the home folder, mode 0600. There is no automatic fallback: if the keystore fails, the error says so instead of quietly writing files. `tgmcp status` shows where the secrets are and warns about leftover plain files.
+**Two tokens, and what they don't stop.** Splitting `token` and `ui-token` keeps a Claude session's own channel (the MCP proxy) away from the routes meant for you at the menu bar or tray. It is not a sandbox: like every secret here, `ui-token` sits in the same keystore (or, with files, the same folder), so code that runs as you can still read it (see "What it doesn't stop" above). Update the daemon and the menu bar or tray app together: an app older than the daemon still sends `token` and is refused.
+
+**No keystore?** On a machine without one (a headless Linux box, say), set `TELEGRAM_MCP_SECRET_STORE=file` for the daemon, the proxies and the CLI. The secrets then go to `token`, `ui-token`, `credentials.json` and `session.key` in the home folder, mode 0600. There is no automatic fallback: if the keystore fails, the error says so instead of quietly writing files. `tgmcp status` shows where the secrets are and warns about leftover plain files.
 
 ## Files
 
@@ -87,7 +90,7 @@ All in `~/.config/telegram-mcp/` (folder mode 0700; override with `TELEGRAM_MCP_
 | `recent.json` | The last 20 sent messages (shown in the menu bar) |
 | `pauses.json` | Moderator pauses in force (see [Moderator commands](#moderator-commands)), so a restart doesn't lift one |
 | `avatars/` | Small (160×160) profile photos for the menu bar and tray avatars, `<chat id>.jpg` (or `.none` when the chat has none) |
-| `token`, `credentials.json`, `session.key` | Only with `TELEGRAM_MCP_SECRET_STORE=file` |
+| `token`, `ui-token`, `credentials.json`, `session.key` | Only with `TELEGRAM_MCP_SECRET_STORE=file` |
 
 The daemon listens on `127.0.0.1:47823` (`TELEGRAM_MCP_PORT`).
 
@@ -346,7 +349,7 @@ tgmcp away message "Back soon."     # without a name: the schedule replying now
 
 `days` is 0 (Sunday) to 6 (Saturday); from and until equal means all day. A file from an earlier build (`enabled`, `from`, `until`, `message` at the top of `away`, any of them) still works: it's read as one schedule with that build's defaults for what's missing (18:00 to 09:00), so upgrading never starts replying all day. Only a file with no `away` gets Daytime and Night.
 
-An away reply shows under Recently sent as "away reply", and `daemon.log` names the schedule. No MCP tool can change these settings, so sessions can't turn it on or rewrite the message; only you can, through the file, the CLI, the menu bar app or the tray (`POST /ui/away` with the token).
+An away reply shows under Recently sent as "away reply", and `daemon.log` names the schedule. No MCP tool can change these settings, so sessions can't turn it on or rewrite the message; only you can, through the file, the CLI, the menu bar app or the tray (`POST /ui/away` with `ui-token`).
 
 ## Footer
 
@@ -403,11 +406,11 @@ Each click saves to `config.json` at once, the same way an approval does: the fi
 
 <img src="docs/menubar-contacts.png" width="370" alt="The Contacts tab: search, the All, Listening and Not listening filter, four saved chats with their tags and Listen switches, and Team QA opened with its explanation, the sending choices (Ask every time selected) and its nickname">
 
-This page is the menu bar's own: it goes through the daemon's local API with the token (`POST /ui/contacts` and `POST /ui/contacts/page`, like approvals). No MCP tool offers the same, so sessions still can't change the rules through the server.
+This page is the menu bar's own: it goes through the daemon's local API with `ui-token` (`POST /ui/contacts` and `POST /ui/contacts/page`, like approvals). No MCP tool offers the same, so sessions still can't change the rules through the server.
 
 ### Avatars
 
-In both apps the avatars on Home's cards, in Contacts and on a page's alarm window show the chat's real Telegram profile photo. The daemon fetches the small (160×160) photo the first time an app asks for it (`GET /ui/avatars/<chat id>`, with the token, like `/ui/state`), keeps it in `avatars/` in the home folder, and fetches it again at most once a day. Each app asks once per chat when the avatar first shows and again every 6 hours, never on each poll. Only chats the panel shows (saved chats, drafts, watched chats, recent sends and pages) are fetched. A chat with no photo, or one that hides it from you, keeps its initials, and so does every avatar while Telegram can't be reached. The demo daemon and the screenshots use made-up gradient pictures, never real photos.
+In both apps the avatars on Home's cards, in Contacts and on a page's alarm window show the chat's real Telegram profile photo. The daemon fetches the small (160×160) photo the first time an app asks for it (`GET /ui/avatars/<chat id>`, with `ui-token`, like `/ui/state`), keeps it in `avatars/` in the home folder, and fetches it again at most once a day. Each app asks once per chat when the avatar first shows and again every 6 hours, never on each poll. Only chats the panel shows (saved chats, drafts, watched chats, recent sends and pages) are fetched. A chat with no photo, or one that hides it from you, keeps its initials, and so does every avatar while Telegram can't be reached. The demo daemon and the screenshots use made-up gradient pictures, never real photos.
 
 ## Tray app (Windows)
 
@@ -435,7 +438,7 @@ Right-click the icon for Open, Contacts, Rules, Log and Quit. Quit keeps it clos
 
 The icons in the panel are [Lucide](https://lucide.dev) (ISC license), drawn from `tray/App/Icons.xaml`.
 
-It reads the daemon's token from Windows Credential Manager (the `telegram-mcp/token` entry the daemon keeps there), or from the `token` file with `TELEGRAM_MCP_SECRET_STORE=file`. It talks only to 127.0.0.1. Problems it can't show in the panel go to `%LOCALAPPDATA%\TelegramMCPTray\tray.log`.
+It reads the apps' token from Windows Credential Manager (the `telegram-mcp/ui-token` entry the daemon keeps there), or from the `ui-token` file with `TELEGRAM_MCP_SECRET_STORE=file`. It talks only to 127.0.0.1. Problems it can't show in the panel go to `%LOCALAPPDATA%\TelegramMCPTray\tray.log`.
 
 Nothing supervises the daemon on Windows yet (`tgmcp install` is launchd-only), so keep `tgmcp daemon` running in a terminal. For the same reason the panel has no Restart button.
 
