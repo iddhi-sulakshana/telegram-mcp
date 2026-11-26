@@ -2,6 +2,7 @@ import { z } from 'zod'
 import {
   RULE_LISTS,
   isFreeNickname,
+  deskOf,
   isListed,
   nicknameFor,
   suggestNickname,
@@ -278,6 +279,12 @@ export class Service {
   #assertWritable(): void {
     const refused = this.#writesRefused()
     if (refused) throw new Error(refused)
+  }
+
+  /** For decideSend: the desk that owns this chat, and whether this session holds it. Undefined when no desk owns it. */
+  #deskCtx(sid: string, chat: { id: number; username?: string | null }): { owner: string; mine: boolean } | undefined {
+    const owner = deskOf(this.d.store.get(), chat)
+    return owner === null ? undefined : { owner, mine: this.d.hub.deskOf(sid) === owner }
   }
 
   // ---- resolving chats -----------------------------------------------------------
@@ -838,6 +845,7 @@ export class Service {
       isWatching: this.d.hub.isWatching(sid, t.peer.id),
       file: file !== undefined,
       takenOver: this.d.hub.isTakenOverBy(sid, t.peer.id),
+      desk: this.#deskCtx(sid, t.peer),
     })
     if (decision.action === 'block') return fail(`Not sent to ${t.label}: ${decision.reason}.`)
     // A file with no caption still carries the footer, without the blank lines that lead into it.
@@ -1572,6 +1580,7 @@ export class Service {
       const decision = decideSend(config, t.peer, {
         isWatching: this.d.hub.isWatching(sid, t.peer.id),
         takenOver: this.d.hub.isTakenOverBy(sid, t.peer.id),
+        desk: this.#deskCtx(sid, t.peer),
       })
       if (decision.action === 'block') return fail(`Not edited in ${t.label}: ${decision.reason}.`)
       // The session may have copied the message with the footer it had then: take that one off, so a
@@ -1598,6 +1607,7 @@ export class Service {
         isWatching: this.d.hub.isWatching(sid, t.peer.id),
         file: rec.kind === 'file',
         takenOver: this.d.hub.isTakenOverBy(sid, t.peer.id),
+        desk: this.#deskCtx(sid, t.peer),
       })
       if (decision.action === 'block') return fail(`Not deleted in ${t.label}: ${decision.reason}.`)
       if (decision.action === 'approve') {
@@ -1625,6 +1635,7 @@ export class Service {
       const decision = decideSend(config, t.peer, {
         isWatching: this.d.hub.isWatching(sid, t.peer.id),
         takenOver: this.d.hub.isTakenOverBy(sid, t.peer.id),
+        desk: this.#deskCtx(sid, t.peer),
       })
       if (decision.action !== 'send') {
         return fail(
@@ -1898,6 +1909,13 @@ export class Service {
       }
       const paused = this.#pauseRefusal(t.peer.id, t.label, 'Not watching')
       if (paused) return paused
+      // A desk's chat reaches only the desk's session, so a watch from any other would hear nothing.
+      const desk = this.#deskCtx(sid, t.peer)
+      if (desk && !desk.mine) {
+        return fail(
+          `Not watching ${t.label}: this chat belongs to desk "${desk.owner}", and only the session holding that desk hears it. Ask that session, or the user, instead.`,
+        )
+      }
       const from = p.from !== undefined ? await this.#resolve(p.from, false) : undefined
       const topicId = p.topicId ?? t.entry?.topicId
       const w = this.d.hub.addWatch(sid, {

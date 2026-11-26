@@ -7,17 +7,21 @@ export type Decision =
 
 /**
  * Who may send where. Order matters and the safer answer wins:
- * blocked > requireApproval > autoSend > autoReply (only while watching) > defaultPolicy.
+ * blocked > another session's desk > requireApproval > autoSend > autoReply (only while watching) > defaultPolicy.
  *
  * A file always asks, whatever the lists, a watch or a /reply handover say: a file can carry
  * anything on this machine, and the request for it may have come from a chat the session reads,
  * not from you. This only turns a "send" into an "approve"; it never loosens anything, so a
  * blocked chat stays blocked.
+ *
+ * `desk` is set when the chat belongs to a desk (config.json "desks") and a session is asking:
+ * any session but the desk's is refused there, so two sessions never answer the same chat. The
+ * desk's own session gets no bypass: the usual rules decide its sends.
  */
 export function decideSend(
   config: Config,
   chat: { id: number; username?: string | null },
-  ctx: { isWatching: boolean; file?: boolean; takenOver?: boolean },
+  ctx: { isWatching: boolean; file?: boolean; takenOver?: boolean; desk?: { owner: string; mine: boolean } },
 ): Decision {
   const d = decideText(config, chat, ctx)
   if (d.action === 'send' && ctx.file) {
@@ -29,9 +33,15 @@ export function decideSend(
 function decideText(
   config: Config,
   chat: { id: number; username?: string | null },
-  ctx: { isWatching: boolean; takenOver?: boolean },
+  ctx: { isWatching: boolean; takenOver?: boolean; desk?: { owner: string; mine: boolean } },
 ): Decision {
   if (isListed(config, 'blocked', chat)) return { action: 'block', reason: 'this chat is on the blocked list' }
+  if (ctx.desk && !ctx.desk.mine) {
+    return {
+      action: 'block',
+      reason: `this chat belongs to desk "${ctx.desk.owner}", and only the session holding that desk sends there. Hand your reply to that session instead`,
+    }
+  }
   // The owner typed /reply in this very chat: that is a yes for this chat, for as long as the takeover lasts.
   if (ctx.takenOver) return { action: 'send', reason: 'the user handed this chat over with /reply' }
   if (isListed(config, 'requireApproval', chat))

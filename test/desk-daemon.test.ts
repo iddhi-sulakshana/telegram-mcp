@@ -86,6 +86,50 @@ describe('desk sessions through the daemon', () => {
     expect(second.events.map(e => e.text)).toEqual(['after the move'])
   })
 
+  test("other sessions can't send, edit, delete, make topics or watch in a desk's chat; the desk can", async () => {
+    const { daemon, tg } = await start()
+    const plain = await connect(daemon, { sessionId: 's_plainone' })
+    const desk = await connect(daemon, { sessionId: 's_deskone1', desk: 'desk' })
+    for (const [tool, args] of [
+      ['telegram_send_message', { to: 'leo', text: 'hi' }],
+      ['telegram_send_sticker', { to: 'leo', fromChat: 'anna', messageId: 1 }],
+      ['telegram_create_topic', { chat: 'leo', title: 't' }],
+      ['telegram_watch', { chat: 'leo' }],
+    ] as const) {
+      const r = (await plain.client.call(tool, args)).result
+      expect(r.isError).toBe(true)
+      expect(r.text).toContain('desk "desk"')
+    }
+    expect(tg.sent).toHaveLength(0)
+    // Chats outside the desk are untouched.
+    expect((await plain.client.call('telegram_watch', { chat: 'anna' })).result.isError).toBeFalsy()
+    // The desk follows the usual rules: leo is autoReply, so it sends once it watches.
+    await desk.client.call('telegram_watch', { chat: 'leo' })
+    const sent = (await desk.client.call('telegram_send_message', { to: 'leo', text: 'from the desk' })).result
+    expect(sent.isError).toBeFalsy()
+    expect(tg.sent.map(s => s.text)).toEqual(['from the desk'])
+  })
+
+  test("once a chat joins a desk, another session can't edit or delete what it sent there before", async () => {
+    const { daemon, tg, paths } = await start({ ...CONFIG, desks: {} })
+    const plain = await connect(daemon, { sessionId: 's_plainone' })
+    await plain.client.call('telegram_watch', { chat: 'leo' })
+    const sent = (await plain.client.call('telegram_send_message', { to: 'leo', text: 'before the desk' })).result
+    expect(sent.isError).toBeFalsy()
+    expect(tg.sent).toHaveLength(1)
+    const messageId = Number(/message #(\d+)/.exec(sent.text)![1])
+    writeFileSync(paths.config, JSON.stringify(CONFIG))
+    daemon.store.reload()
+    for (const [tool, args] of [
+      ['telegram_edit_message', { chat: 'leo', messageId, text: 'changed' }],
+      ['telegram_delete_message', { chat: 'leo', messageId }],
+    ] as const) {
+      const r = (await plain.client.call(tool, args)).result
+      expect(r.isError).toBe(true)
+      expect(r.text).toContain('desk "desk"')
+    }
+  })
+
   test('a desk name that is not valid is ignored: the proxy is an ordinary session', async () => {
     const { daemon } = await start()
     const odd = await connect(daemon, { sessionId: 's_oddname1', desk: 'Not A Desk' })
