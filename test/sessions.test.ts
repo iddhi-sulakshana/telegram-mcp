@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { DeskStore } from '../src/daemon/desk-store'
+import { DESK_QUEUE_MAX_AGE_MS, DeskStore } from '../src/daemon/desk-store'
 import { SessionHub } from '../src/daemon/sessions'
 import type { IncomingMessage, TgEvent } from '../src/shared/protocol'
 
@@ -506,6 +506,32 @@ describe('SessionHub', () => {
         new SessionHub({ deskFor, desks: new DeskStore(file, m => logs.push(m)) })
         expect(existsSync(`${file}.bad`)).toBe(true)
         expect(logs.join('\n')).not.toContain('private')
+      })
+
+      test("the age limit also holds while the daemon runs: the sweep drops a desk's old queued messages", () => {
+        const file = path()
+        const hub = new SessionHub({ deskFor, desks: new DeskStore(file), deskMaxAgeMs: 60_000 })
+        hub.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk' }, sink())
+        hub.addWatch('d_desk', { chatId: -5, chatLabel: 'g' })
+        hub.dispatch(msg(-5, 7, 'old', { date: new Date(Date.now() - 120_000).toISOString() }), describeMsg)
+        hub.dispatch(msg(-5, 7, 'new'), describeMsg)
+        hub.sweep()
+        const { events, dropped } = new SessionHub({ deskFor, desks: new DeskStore(file) }).drain('d_desk')
+        expect(events.map(e => e.text)).toEqual(['new'])
+        expect(dropped).toBe(1)
+      })
+
+      test('a desks.json.bad older than the age limit is deleted; a newer one is kept', () => {
+        const oldFile = path()
+        writeFileSync(`${oldFile}.bad`, 'old')
+        const past = new Date(Date.now() - DESK_QUEUE_MAX_AGE_MS - 60_000)
+        utimesSync(`${oldFile}.bad`, past, past)
+        new DeskStore(oldFile).load()
+        expect(existsSync(`${oldFile}.bad`)).toBe(false)
+        const newFile = path()
+        writeFileSync(`${newFile}.bad`, 'recent')
+        new DeskStore(newFile).load()
+        expect(existsSync(`${newFile}.bad`)).toBe(true)
       })
 
       test('a failed write leaves no temp file behind', () => {

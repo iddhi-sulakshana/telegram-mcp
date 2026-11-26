@@ -1,5 +1,5 @@
 import { deskSessionId } from '../shared/desks'
-import type { DeskState, DeskStore } from './desk-store'
+import { DESK_QUEUE_MAX_AGE_MS, type DeskState, type DeskStore } from './desk-store'
 import type { IncomingMessage, ServerMessage, TgEvent, WatchSpec } from '../shared/protocol'
 import { fieldName, messageBody, quoted, senderLabel } from '../shared/text'
 
@@ -53,6 +53,8 @@ export interface HubOptions {
    * start's catch-up from history brings back. flush() writes at once (the daemon calls it on stop).
    */
   saveDelayMs?: number
+  /** A desk's queued messages older than this go on each sweep (and when desks.json loads). */
+  deskMaxAgeMs?: number
 }
 
 /**
@@ -85,6 +87,7 @@ export class SessionHub {
   readonly #deskMaxQueue: number
   readonly #deskConfigured: (name: string) => boolean
   readonly #saveDelayMs: number
+  readonly #deskMaxAgeMs: number
   #saveTimer: ReturnType<typeof setTimeout> | null = null
   /** A desk's state changed since desks.json was last written. */
   #dirty = false
@@ -104,6 +107,7 @@ export class SessionHub {
     this.#deskMaxQueue = opts.deskMaxQueue ?? 1000
     this.#deskConfigured = opts.deskConfigured ?? (() => true)
     this.#saveDelayMs = opts.saveDelayMs ?? 0
+    this.#deskMaxAgeMs = opts.deskMaxAgeMs ?? DESK_QUEUE_MAX_AGE_MS
     // Desks known from before a restart: their watches apply, and their queue fills, before any proxy is back.
     for (const [desk, d] of this.#desks?.load() ?? []) {
       // A desk taken out of config.json since is dropped, with its queue (desks.json is rewritten on the next change).
@@ -595,7 +599,17 @@ export class SessionHub {
     const gone: string[] = []
     const now = this.#now()
     for (const s of this.#sessions.values()) {
-      if (s.desk !== null && this.#deskConfigured(s.desk)) continue
+      if (s.desk !== null && this.#deskConfigured(s.desk)) {
+        // A desk is kept, but not its old messages: what nobody took in time doesn't stay on disk.
+        const cutoff = now - this.#deskMaxAgeMs
+        const kept = s.queue.filter(e => !(Date.parse(e.date) < cutoff))
+        if (kept.length !== s.queue.length) {
+          s.dropped += s.queue.length - kept.length
+          s.queue = kept
+          this.#touch(s)
+        }
+        continue
+      }
       if (s.proxy === null && s.disconnectedAt !== null && now - s.disconnectedAt > this.#graceMs) {
         for (const m of s.monitors) (m as { close?: () => void }).close?.()
         this.#sessions.delete(s.id)

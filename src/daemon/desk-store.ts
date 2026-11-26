@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { z } from 'zod'
 import { deskName } from '../shared/desks'
@@ -97,6 +97,7 @@ export class DeskStore {
 
   load(): Map<string, DeskState> {
     const out = new Map<string, DeskState>()
+    this.#expireSetAside()
     if (!existsSync(this.path)) return out
     let raw: unknown
     try {
@@ -131,6 +132,17 @@ export class DeskStore {
       })
     }
     return out
+  }
+
+  /** A desks.json.bad (a file that couldn't be read) is kept for the person only as long as queued messages are. */
+  #expireSetAside(): void {
+    const aside = `${this.path}.bad`
+    try {
+      if (this.now() - statSync(aside).mtimeMs > DESK_QUEUE_MAX_AGE_MS) {
+        rmSync(aside, { force: true })
+        this.log(`desks.json.bad was older than the age limit for queued messages and was deleted`)
+      }
+    } catch {}
   }
 
   /** Moves a file that can't be read to desks.json.bad (kept for the person to look at) and starts empty. The log quotes none of it. */
