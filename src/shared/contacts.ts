@@ -171,5 +171,9 @@ export function renameContact(config: Config, nickname: string, wanted: string):
     config.rules[list] = config.rules[list].map(ref => (typeof ref === 'string' && normalizeNickname(ref) === old ? to : ref))
   }
   config.away.skip = config.away.skip.map(ref => (typeof ref === 'string' && normalizeNickname(ref) === old ? to : ref))
+  // A desk names its chats the same way: a rename must not take the chat off its desk.
+  for (const d of Object.values(config.desks)) {
+    d.chats = d.chats.map(ref => (typeof ref === 'string' && normalizeNickname(ref) === old ? to : ref))
+  }
   return to
 }

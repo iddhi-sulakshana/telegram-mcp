@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { deskOf, parseConfig, rulesMentioning } from '../src/shared/config'
+import { renameContact } from '../src/shared/contacts'
 import { deskName, deskSessionId } from '../src/shared/desks'
 
 const config = parseConfig(
@@ -34,6 +35,13 @@ describe('desks in config.json', () => {
     // Else a session could repoint "leo" (telegram_save_chat) and move the desk to another chat.
     expect(rulesMentioning(config, 'LEO')).toEqual(['desks.desk'])
     expect(rulesMentioning(config, 'qa')).toEqual([])
+  })
+
+  test('renaming a contact (tray Contacts page) keeps its chat on the desk', () => {
+    const c = parseConfig(JSON.stringify({ chats: { leo: { id: 10 } }, desks: { desk: { chats: ['leo', 'LEO ', 'other'] } } }))
+    renameContact(c, 'leo', 'leonard')
+    expect(c.desks.desk!.chats).toEqual(['leonard', 'leonard', 'other'])
+    expect(deskOf(c, { id: 10 })).toBe('desk')
   })
 
   test('the example config has a desk that owns leo', () => {
