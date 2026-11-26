@@ -450,6 +450,8 @@ export class SessionHub {
    */
   #promote(s: Session): void {
     if (s.desk === null || s.proxy !== null || s.standby.size === 0 || this.#now() < s.holdUntil) return
+    // A desk taken out of config.json is given to nobody; the sweep lets its waiting proxies go.
+    if (!this.#deskConfigured(s.desk)) return
     const [sink, p] = [...s.standby].reduce((a, b) => (b[1].startedAt > a[1].startedAt ? b : a))
     s.standby.delete(sink)
     this.#newEpoch(s)
@@ -756,6 +758,12 @@ export class SessionHub {
     const gone: string[] = []
     const now = this.#now()
     for (const s of this.#sessions.values()) {
+      // Proxies waiting for a desk config.json no longer lists: closed with a reason, so they reconnect
+      // and, as their --desk names no listed desk, carry on as ordinary sessions.
+      if (s.desk !== null && !this.#deskConfigured(s.desk) && s.standby.size) {
+        for (const sink of s.standby.keys()) (sink as { close?: (code?: number, reason?: string) => void }).close?.(4001, 'desk no longer in config.json')
+        s.standby.clear()
+      }
       if (s.desk !== null && this.#deskConfigured(s.desk)) {
         // Its holder gone longer than the hold: a proxy waiting for it gets it.
         this.#promote(s)

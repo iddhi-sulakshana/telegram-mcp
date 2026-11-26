@@ -371,6 +371,23 @@ describe('SessionHub', () => {
       expect(hub.isCurrentProxy('d_desk', waiting)).toBe(true)
     })
 
+    test('a desk taken out of config.json is given to no waiting proxy; the sweep lets them go', () => {
+      let now = 1_000
+      let configured = true
+      const hub = new SessionHub({ deskFor, now: () => now, deskConfigured: () => configured })
+      const holder = sink()
+      const closed: string[] = []
+      const waiting = { send: () => 1, close: (_c?: number, reason?: string) => closed.push(reason ?? '') }
+      hub.attachProxy('d_desk', { label: 'h', channel: false, watches: [], desk: 'desk', startedAt: 200 }, holder)
+      expect(hub.attachProxy('d_desk', { label: 'w', channel: false, watches: [], desk: 'desk', startedAt: 100 }, waiting)).toBe(false)
+      configured = false
+      hub.detachProxy('d_desk', holder)
+      now += 60_000
+      hub.sweep()
+      expect(hub.isCurrentProxy('d_desk', waiting)).toBe(false)
+      expect(closed).toEqual(['desk no longer in config.json'])
+    })
+
     test("a waiting proxy that disconnects is out of line: it isn't given the desk later", () => {
       let now = 1_000
       const hub = new SessionHub({ deskFor, now: () => now })

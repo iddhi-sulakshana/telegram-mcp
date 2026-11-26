@@ -556,6 +556,23 @@ describe('desk sessions through the daemon', () => {
     expect((await plain.client.call('telegram_status', {})).result.text).toContain('belongs to desk "desk"')
   })
 
+  test("telegram_status doesn't hang on a slow Telegram: lookups run at once, bounded, and only while connected", async () => {
+    const config = { ...CONFIG, rules: { autoReply: ['leo', 'anna', '@leonardo_s'] }, desks: { desk: { chats: ['leo'] } } }
+    const { daemon, tg } = await start(config)
+    tg.add(LEONARDO)
+    const plain = await connect(daemon, { sessionId: 's_plainone' })
+    for (const chat of ['anna', '@leonardo_s']) expect((await plain.client.call('telegram_watch', { chat })).result.isError).toBeFalsy()
+    // A getPeer that waits like a client still connecting (25 s in the real one).
+    tg.getPeer = () => new Promise(() => {})
+    let t = Date.now()
+    expect((await plain.client.call('telegram_status', {})).result.text).toContain('Watches:')
+    expect(Date.now() - t).toBeLessThan(4_000)
+    tg.phase = 'connecting'
+    t = Date.now()
+    await plain.client.call('telegram_status', {})
+    expect(Date.now() - t).toBeLessThan(1_000)
+  })
+
   test('telegram_get_events says when messages expired, apart from a full queue', async () => {
     const home = mkdtempSync(join(tmpdir(), 'tgmcp-desk-expired-'))
     const paths = getPaths(home)

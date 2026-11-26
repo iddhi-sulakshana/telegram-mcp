@@ -136,6 +136,8 @@ export async function createDaemon(o: DaemonOptions) {
   store.watch()
 
   tg.onMessage(msg => {
+    // Every chat's @username as it comes, so the desk checks find a desk that lists a chat that way.
+    service.notePeer(msg.chat)
     if (msg.outgoing) {
       // The message's own time: a catch-up after sleep replays old sends, which mustn't count as just now.
       const sentAt = Date.parse(msg.date)

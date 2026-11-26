@@ -134,6 +134,8 @@ const STICKER_TEXT = '[sticker]'
 
 /** The most watched messages one telegram_get_events call returns; the rest stay queued. */
 const GET_EVENTS_MAX = 200
+/** How long telegram_status waits for one chat's @username from Telegram (all are asked at once). */
+const STATUS_PEER_WAIT_MS = 1_500
 
 /** How far back a desk's catch-up reads each of its chats (catchUpDesk). */
 const CATCH_UP_LIMIT = 100
@@ -213,6 +215,24 @@ export class Service {
   #lastAck = new Map<string, number>()
   /** Desks whose history catch-up ran since the daemon started (catchUpDesk). */
   #caughtUp = new Set<string>()
+  /** The @username of each chat seen since start (messages, lookups), so a desk listing one is found without asking Telegram. */
+  #usernames = new Map<number, string | null>()
+
+  /** Notes a chat's @username as seen (each incoming message does). */
+  notePeer(chat: { id: number; username?: string | null }): void {
+    if (chat.username !== undefined) this.#usernames.set(chat.id, chat.username ?? null)
+  }
+
+  /**
+   * A chat with its @username when one is known without asking Telegram: seen since start, else its
+   * saved entry. For the desk checks (deskOf), which may list a chat by @username.
+   */
+  #chatKey(chatId: number): { id: number; username: string | null } {
+    const seen = this.#usernames.get(chatId)
+    if (seen !== undefined) return { id: chatId, username: seen }
+    const entry = Object.values(this.d.store.get().chats).find(e => e.id === chatId)
+    return { id: chatId, username: entry?.username ?? null }
+  }
 
   get #mcpHome(): string {
     return this.d.mcpHome ?? join(homedir(), '.config', 'telegram-mcp')
@@ -370,13 +390,16 @@ export class Service {
   // ---- resolving chats -----------------------------------------------------------
 
   async #peerById(id: number): Promise<PeerInfo> {
+    let peer: PeerInfo
     try {
-      return await this.d.tg.getPeer(id)
+      peer = await this.d.tg.getPeer(id)
     } catch {
       // A fresh session may not know this chat's access hash yet; loading dialogs teaches it.
       await this.d.tg.listDialogs({ limit: 200, unreadOnly: false })
-      return await this.d.tg.getPeer(id)
+      peer = await this.d.tg.getPeer(id)
     }
+    this.notePeer(peer)
+    return peer
   }
 
   /** Looks up a saved entry and checks it still points where the file says. */
@@ -1429,13 +1452,15 @@ export class Service {
       moderation: { action: 'pause', all: p.scope === 'all', until: fmtClock(p.until), minutes: Math.max(1, Math.ceil((p.until - Date.now()) / 60_000)) },
     })
     if (scope !== 'all') {
+      // With its @username: a desk may list the chat that way, and then only the desk is told.
+      const chat = this.#chatKey(scope)
       const still = this.paused(scope)
-      return still ? hub.moderate(scope, pauseEvent(still, base), false) : hub.moderate(scope, { ...base, moderation: { action: 'resume', all: false } }, false)
+      return still ? hub.moderate(chat, pauseEvent(still, base), false) : hub.moderate(chat, { ...base, moderation: { action: 'resume', all: false } }, false)
     }
     const told = new Set(hub.moderate(null, { ...base, moderation: { action: 'resume', all: true } }, false))
     for (const p of this.d.pauses?.list() ?? []) {
       if (p.scope === 'all') continue
-      for (const id of hub.moderate(p.scope, pauseEvent(p, { ...base, chatId: p.scope, chatLabel: p.chatLabel, chatNickname: nicknameFor(this.d.store.get(), p.scope) }), false)) told.add(id)
+      for (const id of hub.moderate(this.#chatKey(p.scope), pauseEvent(p, { ...base, chatId: p.scope, chatLabel: p.chatLabel, chatNickname: nicknameFor(this.d.store.get(), p.scope) }), false)) told.add(id)
     }
     return [...told]
   }
@@ -1525,18 +1550,29 @@ export class Service {
           : 'Creating chats: off (chatCreation.enabled is false)',
       )
       lines.push(watches.length ? 'Watches:' : 'Watches: none')
-      for (const w of watches) {
-        // A watch from before its chat joined another session's desk hears nothing now: say so.
-        // By id first; a desk may list the chat by @username, which needs the chat's username.
-        let owner = deskOf(store.get(), { id: w.chatId })
-        if (owner === null && Object.keys(store.get().desks).length) {
-          // The cached peer only: no dialog reload per watch while Telegram is unsteady.
-          const username = await this.d.tg.getPeer(w.chatId).then(
-            p => p.username,
-            () => null,
-          )
-          if (username) owner = deskOf(store.get(), { id: w.chatId, username })
-        }
+      // A watch from before its chat joined another session's desk hears nothing now: say so. A desk
+      // may list the chat by @username: known ones come from memory; the rest are asked of Telegram
+      // only while it is connected, all at once, each for at most STATUS_PEER_WAIT_MS.
+      const owners = await Promise.all(
+        watches.map(async w => {
+          const config = store.get()
+          const key = this.#chatKey(w.chatId)
+          let owner = deskOf(config, key)
+          if (owner === null && key.username === null && Object.keys(config.desks).length && this.d.tg.state().phase === 'connected') {
+            const peer = await Promise.race([
+              this.d.tg.getPeer(w.chatId).catch(() => null),
+              new Promise<null>(r => setTimeout(r, STATUS_PEER_WAIT_MS, null)),
+            ])
+            if (peer) {
+              this.notePeer(peer)
+              if (peer.username) owner = deskOf(config, { id: w.chatId, username: peer.username })
+            }
+          }
+          return owner
+        }),
+      )
+      for (const [i, w] of watches.entries()) {
+        const owner = owners[i] ?? null
         const silent = owner !== null && owner !== desk ? `, belongs to desk "${owner}": this session hears nothing there` : ''
         lines.push(
           `  ${w.id}: ${w.chatLabel}${w.fromLabel ? `, only from ${w.fromLabel}` : ''}${w.topicId ? `, topic ${w.topicId}` : ''}${w.note ? ` (${w.note})` : ''}${silent}`,
