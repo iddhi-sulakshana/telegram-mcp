@@ -12,6 +12,10 @@ export interface DaemonClientOptions {
   sessionId: string
   label: string
   channel: boolean
+  /** Speak as this desk's session (tgmcp mcp --desk). */
+  desk?: string
+  /** When this proxy started (ms); defaults to when the client was made. */
+  startedAt?: number
   log: (msg: string) => void
   /** Called once if the daemon can't be reached at first, e.g. to ask launchd to start it. */
   onUnreachable?: () => void
@@ -42,7 +46,11 @@ export class DaemonClient {
   telegram: TelegramState | null = null
   onEvent: (e: TgEvent) => void = () => {}
 
-  constructor(private readonly o: DaemonClientOptions) {}
+  readonly #startedAt: number
+
+  constructor(private readonly o: DaemonClientOptions) {
+    this.#startedAt = o.startedAt ?? Date.now()
+  }
 
   get connected(): boolean {
     return this.#open
@@ -95,6 +103,8 @@ export class DaemonClient {
         label: this.o.label,
         channel: this.o.channel,
         watches: this.#watches,
+        ...(this.o.desk ? { desk: this.o.desk } : {}),
+        startedAt: this.#startedAt,
       }
       ws.send(JSON.stringify(hello))
       this.#open = true

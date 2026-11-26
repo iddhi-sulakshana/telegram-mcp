@@ -2,6 +2,7 @@ import { z } from 'zod'
 import {
   RULE_LISTS,
   isFreeNickname,
+  deskOf,
   isListed,
   nicknameFor,
   suggestNickname,
@@ -34,6 +35,7 @@ import type { Pause, Pauses } from './moderation'
 import { visibleText } from './formatting'
 import type { Page, PageAction, PageActor, Pager } from './pager'
 import { formatEvent, type SessionHub } from './sessions'
+import { DESK_QUEUE_MAX_AGE_DAYS } from './desk-store'
 import type { SendFileOptions, StickerRef, TelegramPort } from './telegram'
 
 export interface ServiceDeps {
@@ -129,6 +131,17 @@ function autoReplyText(c: UiContact): string {
 }
 
 const STICKER_TEXT = '[sticker]'
+
+/** The most watched messages one telegram_get_events call returns; the rest stay queued. */
+const GET_EVENTS_MAX = 200
+/** How long telegram_status waits for one chat's @username from Telegram (all are asked at once). */
+const STATUS_PEER_WAIT_MS = 1_500
+
+/** How far back a desk's catch-up reads each of its chats (catchUpDesk). */
+const CATCH_UP_LIMIT = 100
+/** How long a desk's catch-up waits for Telegram to connect, and how often it looks. */
+const CATCH_UP_WAIT_MS = 60_000
+const CATCH_UP_POLL_MS = 1_000
 /** The longest caption Telegram takes under a file (without Premium). */
 const CAPTION_MAX = 1024
 
@@ -200,6 +213,26 @@ export class Service {
   #inflight = new Map<number, Set<Promise<unknown>>>()
   /** When each chat last got a stop or a resume ack, so a repeated /bots command doesn't make the chat noisy. */
   #lastAck = new Map<string, number>()
+  /** Desks whose history catch-up ran since the daemon started (catchUpDesk). */
+  #caughtUp = new Set<string>()
+  /** The @username of each chat seen since start (messages, lookups), so a desk listing one is found without asking Telegram. */
+  #usernames = new Map<number, string | null>()
+
+  /** Notes a chat's @username as seen (each incoming message does). */
+  notePeer(chat: { id: number; username?: string | null }): void {
+    if (chat.username !== undefined) this.#usernames.set(chat.id, chat.username ?? null)
+  }
+
+  /**
+   * A chat with its @username when one is known without asking Telegram: seen since start, else its
+   * saved entry. For the desk checks (deskOf), which may list a chat by @username.
+   */
+  #chatKey(chatId: number): { id: number; username: string | null } {
+    const seen = this.#usernames.get(chatId)
+    if (seen !== undefined) return { id: chatId, username: seen }
+    const entry = Object.values(this.d.store.get().chats).find(e => e.id === chatId)
+    return { id: chatId, username: entry?.username ?? null }
+  }
 
   get #mcpHome(): string {
     return this.d.mcpHome ?? join(homedir(), '.config', 'telegram-mcp')
@@ -280,16 +313,93 @@ export class Service {
     if (refused) throw new Error(refused)
   }
 
+  /**
+   * A desk is back (its proxy said hello) for the first time since the daemon started: hand it the
+   * messages of its own chats that the daemon never saw, read from each chat's history after the
+   * newest id desks.json had at start. That covers what Telegram's own catch-up can't (a long
+   * outage). A message the daemon saw live is never handed over again, heard or not (paused, off
+   * autoReply). Only the desk's own chats: other sessions may hear the rest, and would get them
+   * twice. Chats with no starting point are skipped. Once per desk per daemon run. Returns how many.
+   */
+  /**
+   * The catch-ups that found Telegram not connected (a long outage, a flood wait): run for every desk a
+   * proxy holds, once Telegram is connected. The daemon calls this on each sweep.
+   */
+  catchUpWaiting(): void {
+    if (this.d.tg.state().phase !== 'connected' || this.d.store.writesRefused()) return
+    for (const sid of this.d.hub.heldDesks()) {
+      const desk = this.d.hub.deskOf(sid)
+      if (!desk || this.#caughtUp.has(desk)) continue
+      void this.catchUpDesk(sid, 0).catch(e => this.d.log?.(`desk ${desk}: catch-up failed: ${errText(e)}`))
+    }
+  }
+
+  async catchUpDesk(sid: string, waitMs = CATCH_UP_WAIT_MS): Promise<number> {
+    const { hub, tg, store } = this.d
+    const desk = hub.deskOf(sid)
+    if (!desk || this.#caughtUp.has(desk)) return 0
+    // Which chats are the desk's is unknown until a valid config.json loads: it runs after that.
+    if (store.writesRefused()) {
+      this.d.log?.(`desk ${desk}: no catch-up yet, config.json has not loaded; it runs once it has`)
+      return 0
+    }
+    // Right after a daemon start Telegram may still be connecting.
+    for (const end = Date.now() + waitMs; tg.state().phase !== 'connected' && Date.now() < end; ) await new Promise(r => setTimeout(r, Math.min(CATCH_UP_POLL_MS, waitMs)))
+    if (tg.state().phase !== 'connected') {
+      this.d.log?.(`desk ${desk}: no catch-up yet, Telegram is not connected; it runs once Telegram is`)
+      return 0
+    }
+    if (this.#caughtUp.has(desk)) return 0
+    this.#caughtUp.add(desk)
+    let handed = 0
+    for (const chatId of new Set(hub.watches(sid).map(w => w.chatId))) {
+      const from = hub.catchUpFrom(sid, chatId)
+      if (from === null) continue
+      try {
+        const peer = await this.#peerById(chatId)
+        const config = store.get()
+        if (deskOf(config, peer) !== desk) continue
+        const history = await tg.getHistory(chatId, { limit: CATCH_UP_LIMIT })
+        if (history.length === CATCH_UP_LIMIT && history.every(m => m.id > from)) {
+          this.d.log?.(`desk ${desk}: chat ${chatId} may have missed more than ${CATCH_UP_LIMIT} messages; only the newest ${CATCH_UP_LIMIT} are caught up`)
+        }
+        // The same gates as a live message: still on autoReply, not paused, no moderator command.
+        // One that fails them is only noted, so it isn't handed over on a later run either.
+        const heard = isListed(config, 'autoReply', peer) && !this.paused(chatId)
+        const me = tg.state().me?.id
+        for (const m of [...history].sort((a, b) => a.id - b.id)) {
+          if (m.outgoing || m.id <= from) continue
+          const msg: IncomingMessage = { ...m, chat: peer }
+          if (!heard || moderatorCommand(config, msg, me)) hub.observe(msg)
+          else if (hub.dispatch(msg, x => describeMessage(store, x), { caughtUp: true }) > 0) handed++
+        }
+      } catch (e) {
+        this.d.log?.(`desk ${desk}: catch-up of chat ${chatId} failed: ${errText(e)}`)
+      }
+    }
+    if (handed) this.d.log?.(`desk ${desk}: caught up ${handed} missed message(s) from chat history`)
+    return handed
+  }
+
+  /** For decideSend: the desk that owns this chat, and whether this session holds it. Undefined when no desk owns it. */
+  #deskCtx(sid: string, chat: { id: number; username?: string | null }): { owner: string; mine: boolean } | undefined {
+    const owner = deskOf(this.d.store.get(), chat)
+    return owner === null ? undefined : { owner, mine: this.d.hub.deskOf(sid) === owner }
+  }
+
   // ---- resolving chats -----------------------------------------------------------
 
   async #peerById(id: number): Promise<PeerInfo> {
+    let peer: PeerInfo
     try {
-      return await this.d.tg.getPeer(id)
+      peer = await this.d.tg.getPeer(id)
     } catch {
       // A fresh session may not know this chat's access hash yet; loading dialogs teaches it.
       await this.d.tg.listDialogs({ limit: 200, unreadOnly: false })
-      return await this.d.tg.getPeer(id)
+      peer = await this.d.tg.getPeer(id)
     }
+    this.notePeer(peer)
+    return peer
   }
 
   /** Looks up a saved entry and checks it still points where the file says. */
@@ -388,7 +498,7 @@ export class Service {
       sid = null
     } else {
       const minutes = this.d.takeoverMinutes ?? 120
-      sid = hub.startTakeover(msg.chatId, minutes * 60_000, { ...base, takeover: { action: 'start', instruction: cmd.instruction, minutes } })
+      sid = hub.startTakeover(msg.chat, minutes * 60_000, { ...base, takeover: { action: 'start', instruction: cmd.instruction, minutes } })
     }
     if (sid) await tg.deleteMessage(msg.chatId, msg.id).catch(() => {})
     return true
@@ -548,7 +658,12 @@ export class Service {
       result = { text: `Declined ${VIA_TEXT[via]}: the message to ${item.chatLabel} was not sent.` }
     } else {
       // The rules may have changed since the draft was made, and a moderator may have paused the chat.
-      const decision = decideSend(this.d.store.get(), { id: item.chatId, username: item.username }, { isWatching: false })
+      // A desk too: a chat that joined one since belongs to that desk's session only.
+      const decision = decideSend(
+        this.d.store.get(),
+        { id: item.chatId, username: item.username },
+        { isWatching: false, desk: this.#deskCtx(item.sessionId, { id: item.chatId, username: item.username }) },
+      )
       const paused = this.#pauseRefusal(item.chatId, item.chatLabel, 'Not sent')
       if (paused) {
         result = paused
@@ -838,6 +953,7 @@ export class Service {
       isWatching: this.d.hub.isWatching(sid, t.peer.id),
       file: file !== undefined,
       takenOver: this.d.hub.isTakenOverBy(sid, t.peer.id),
+      desk: this.#deskCtx(sid, t.peer),
     })
     if (decision.action === 'block') return fail(`Not sent to ${t.label}: ${decision.reason}.`)
     // A file with no caption still carries the footer, without the blank lines that lead into it.
@@ -1032,7 +1148,11 @@ export class Service {
     // A delete only takes something back, so a moderator's pause doesn't stop it; an edit says something new.
     const paused = action === 'edit' ? this.#pauseRefusal(item.chatId, item.chatLabel, 'Not edited') : null
     if (paused) return paused
-    const decision = decideSend(this.d.store.get(), { id: item.chatId, username: item.username }, { isWatching: false })
+    const decision = decideSend(
+      this.d.store.get(),
+      { id: item.chatId, username: item.username },
+      { isWatching: false, desk: this.#deskCtx(item.sessionId, { id: item.chatId, username: item.username }) },
+    )
     if (decision.action === 'block') {
       this.d.log?.(`${action} refused after approval (${decision.reason}): ${changeLogLine(item)}`)
       return fail(`Not ${done} in ${item.chatLabel}: ${decision.reason}.`)
@@ -1077,7 +1197,14 @@ export class Service {
         this.d.log?.(`create chat refused after approval (discussion group ${chatId} paused by a moderator): ${what}`)
         return groupPaused
       }
-      const rule = decideSend(this.d.store.get(), { id: chatId, username }, { isWatching: false })
+      // The same desk check as at request time: a group that joined another session's desk while the
+      // request waited isn't linked for this one.
+      const desk = this.#deskCtx(item.sessionId, { id: chatId, username })
+      if (desk && !desk.mine) {
+        this.d.log?.(`create chat refused after approval (discussion group ${chatId} belongs to desk "${desk.owner}"): ${what}`)
+        return fail(`Not created: the discussion group ${label} belongs to desk "${desk.owner}" now, so this session can't link it.`)
+      }
+      const rule = decideSend(this.d.store.get(), { id: chatId, username }, { isWatching: false, desk })
       if (rule.action === 'block') {
         this.d.log?.(`create chat refused after approval (discussion group ${chatId}: ${rule.reason}): ${what}`)
         return fail(`Not created: the discussion group ${label} is blocked now (${rule.reason}), so it won't be linked.`)
@@ -1235,7 +1362,7 @@ export class Service {
     if (now - (this.#lastAck.get(key) ?? 0) < MODERATION_ACK_GAP_MS) return
     const config = this.d.store.get()
     const peer = await this.#peerById(chatId)
-    const rule = decideSend(config, peer, { isWatching: this.d.hub.subscribers(chatId).length > 0 })
+    const rule = decideSend(config, peer, { isWatching: this.d.hub.subscribers(peer).length > 0 })
     if (rule.action !== 'send') return
     this.#lastAck.set(key, now)
     const footed = withFooter(text, config.footer)
@@ -1272,7 +1399,7 @@ export class Service {
       pauses.stop({ scope: cmd.all ? 'all' : msg.chatId, chatLabel: oneLine(msg.chat.name), at: sentAt, until, by: from.id, byName: oneLine(from.name) })
       const left = until - Date.now()
       const told = hub.moderate(
-        cmd.all ? null : msg.chatId,
+        cmd.all ? null : msg.chat,
         { ...base, moderation: { action: 'pause', all: cmd.all, until: fmtClock(until), minutes: Math.ceil(left / 60_000) } },
         true,
       )
@@ -1325,13 +1452,15 @@ export class Service {
       moderation: { action: 'pause', all: p.scope === 'all', until: fmtClock(p.until), minutes: Math.max(1, Math.ceil((p.until - Date.now()) / 60_000)) },
     })
     if (scope !== 'all') {
+      // With its @username: a desk may list the chat that way, and then only the desk is told.
+      const chat = this.#chatKey(scope)
       const still = this.paused(scope)
-      return still ? hub.moderate(scope, pauseEvent(still, base), false) : hub.moderate(scope, { ...base, moderation: { action: 'resume', all: false } }, false)
+      return still ? hub.moderate(chat, pauseEvent(still, base), false) : hub.moderate(chat, { ...base, moderation: { action: 'resume', all: false } }, false)
     }
     const told = new Set(hub.moderate(null, { ...base, moderation: { action: 'resume', all: true } }, false))
     for (const p of this.d.pauses?.list() ?? []) {
       if (p.scope === 'all') continue
-      for (const id of hub.moderate(p.scope, pauseEvent(p, { ...base, chatId: p.scope, chatLabel: p.chatLabel, chatNickname: nicknameFor(this.d.store.get(), p.scope) }), false)) told.add(id)
+      for (const id of hub.moderate(this.#chatKey(p.scope), pauseEvent(p, { ...base, chatId: p.scope, chatLabel: p.chatLabel, chatNickname: nicknameFor(this.d.store.get(), p.scope) }), false)) told.add(id)
     }
     return [...told]
   }
@@ -1397,6 +1526,15 @@ export class Service {
       if (store.writesRefused()) lines.push('Writes: REFUSED (no valid config.json since the daemon started). Reading still works; fix config.json and it reloads by itself.')
       const watches = hub.watches(sid)
       lines.push(`This session: ${sid}`)
+      const desk = hub.deskOf(sid)
+      if (desk) {
+        const owned = store.get().desks[desk]?.chats ?? []
+        lines.push(
+          owned.length
+            ? `Desk: ${desk}. Only this session hears and sends to its ${owned.length} chat(s): ${owned.map(r => fieldName(String(r))).join(', ')}. Watch them to hear them.`
+            : `Desk: ${desk}, but config.json lists no chats under desks.${desk}, so it owns none.`,
+        )
+      }
       lines.push(
         `Delivery: ${hub.isChannel(sid) ? 'channel push' : hub.monitorCount(sid) > 0 ? 'Monitor connected' : 'nothing listening (messages queue up)'}`,
       )
@@ -1412,9 +1550,32 @@ export class Service {
           : 'Creating chats: off (chatCreation.enabled is false)',
       )
       lines.push(watches.length ? 'Watches:' : 'Watches: none')
-      for (const w of watches) {
+      // A watch from before its chat joined another session's desk hears nothing now: say so. A desk
+      // may list the chat by @username: known ones come from memory; the rest are asked of Telegram
+      // only while it is connected, all at once, each for at most STATUS_PEER_WAIT_MS.
+      const owners = await Promise.all(
+        watches.map(async w => {
+          const config = store.get()
+          const key = this.#chatKey(w.chatId)
+          let owner = deskOf(config, key)
+          if (owner === null && key.username === null && Object.keys(config.desks).length && this.d.tg.state().phase === 'connected') {
+            const peer = await Promise.race([
+              this.d.tg.getPeer(w.chatId).catch(() => null),
+              new Promise<null>(r => setTimeout(r, STATUS_PEER_WAIT_MS, null)),
+            ])
+            if (peer) {
+              this.notePeer(peer)
+              if (peer.username) owner = deskOf(config, { id: w.chatId, username: peer.username })
+            }
+          }
+          return owner
+        }),
+      )
+      for (const [i, w] of watches.entries()) {
+        const owner = owners[i] ?? null
+        const silent = owner !== null && owner !== desk ? `, belongs to desk "${owner}": this session hears nothing there` : ''
         lines.push(
-          `  ${w.id}: ${w.chatLabel}${w.fromLabel ? `, only from ${w.fromLabel}` : ''}${w.topicId ? `, topic ${w.topicId}` : ''}${w.note ? ` (${w.note})` : ''}`,
+          `  ${w.id}: ${w.chatLabel}${w.fromLabel ? `, only from ${w.fromLabel}` : ''}${w.topicId ? `, topic ${w.topicId}` : ''}${w.note ? ` (${w.note})` : ''}${silent}`,
         )
       }
       if (watches.length && !hub.isChannel(sid)) {
@@ -1563,6 +1724,7 @@ export class Service {
       const decision = decideSend(config, t.peer, {
         isWatching: this.d.hub.isWatching(sid, t.peer.id),
         takenOver: this.d.hub.isTakenOverBy(sid, t.peer.id),
+        desk: this.#deskCtx(sid, t.peer),
       })
       if (decision.action === 'block') return fail(`Not edited in ${t.label}: ${decision.reason}.`)
       // The session may have copied the message with the footer it had then: take that one off, so a
@@ -1589,6 +1751,7 @@ export class Service {
         isWatching: this.d.hub.isWatching(sid, t.peer.id),
         file: rec.kind === 'file',
         takenOver: this.d.hub.isTakenOverBy(sid, t.peer.id),
+        desk: this.#deskCtx(sid, t.peer),
       })
       if (decision.action === 'block') return fail(`Not deleted in ${t.label}: ${decision.reason}.`)
       if (decision.action === 'approve') {
@@ -1616,6 +1779,7 @@ export class Service {
       const decision = decideSend(config, t.peer, {
         isWatching: this.d.hub.isWatching(sid, t.peer.id),
         takenOver: this.d.hub.isTakenOverBy(sid, t.peer.id),
+        desk: this.#deskCtx(sid, t.peer),
       })
       if (decision.action !== 'send') {
         return fail(
@@ -1680,6 +1844,13 @@ export class Service {
         }
         const rule = decideSend(config, g.peer, { isWatching: false })
         if (rule.action === 'block') return fail(`Not created: ${g.label} is blocked (${rule.reason}), so it won't be linked.`)
+        // Linking changes the group, so a desk's group is the desk's to link.
+        const groupDesk = this.#deskCtx(sid, g.peer)
+        if (groupDesk && !groupDesk.mine) {
+          return fail(
+            `Not created: ${g.label} belongs to desk "${groupDesk.owner}", and only the session holding that desk may link it. Hand the request to that session instead.`,
+          )
+        }
         const groupPaused = this.#pauseRefusal(g.peer.id, g.label, 'Not created')
         if (groupPaused) return groupPaused
         // Only the checked title and the id go on the card, not the saved nickname.
@@ -1889,6 +2060,13 @@ export class Service {
       }
       const paused = this.#pauseRefusal(t.peer.id, t.label, 'Not watching')
       if (paused) return paused
+      // A desk's chat reaches only the desk's session, so a watch from any other would hear nothing.
+      const desk = this.#deskCtx(sid, t.peer)
+      if (desk && !desk.mine) {
+        return fail(
+          `Not watching ${t.label}: this chat belongs to desk "${desk.owner}", and only the session holding that desk hears it. Ask that session, or the user, instead.`,
+        )
+      }
       const from = p.from !== undefined ? await this.#resolve(p.from, false) : undefined
       const topicId = p.topicId ?? t.entry?.topicId
       const w = this.d.hub.addWatch(sid, {
@@ -1902,7 +2080,7 @@ export class Service {
       const replies = isListed(config, 'requireApproval', t.peer) || isListed(config, 'blocked', t.peer)
         ? `Replies there follow the stricter rule: ${policyLabel(config, t.peer)}.`
         : 'Your replies there go out without asking while this watch is on.'
-      const others = this.d.hub.subscribers(t.peer.id).filter(id => id !== sid).length
+      const others = this.d.hub.subscribers(t.peer).filter(id => id !== sid).length
       return {
         text: [
           `Watching ${t.label}${from ? `, only messages from ${from.label}` : ''}${topicId ? `, topic ${topicId}` : ''}. Watch id: ${w.id}.`,
@@ -1925,10 +2103,17 @@ export class Service {
     },
 
     telegram_get_events: async sid => {
-      const { events, dropped } = this.d.hub.drain(sid)
-      if (events.length === 0) return { text: dropped ? `${dropped} older messages were dropped (queue full).` : 'No new watched messages.' }
+      // At most GET_EVENTS_MAX per call: a desk's queue can hold far more than one answer should carry.
+      const { events, dropped, expired } = this.d.hub.drain(sid, GET_EVENTS_MAX)
+      const lost = [
+        ...(dropped ? [`${dropped} older messages were dropped because the queue was full.`] : []),
+        ...(expired ? [`${expired} older messages expired: nobody took them within ${DESK_QUEUE_MAX_AGE_DAYS} days.`] : []),
+      ]
+      if (events.length === 0) return { text: lost.length ? lost.join(' ') : 'No new watched messages.' }
       const parts = events.map(formatEvent)
-      if (dropped) parts.unshift(`(${dropped} older messages were dropped because the queue was full.)`)
+      if (lost.length) parts.unshift(`(${lost.join(' ')})`)
+      const left = this.d.hub.pending(sid)
+      if (left) parts.push(`(${left} more waiting: call telegram_get_events again.)`)
       return { text: parts.join('\n\n') }
     },
 

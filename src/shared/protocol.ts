@@ -106,6 +106,8 @@ export interface TgEvent {
   takeover?: { action: 'start'; instruction: string; minutes: number } | { action: 'stop' }
   /** Set on the notices a moderator's /bots command sends: this chat (or every chat) is paused, or no longer. */
   moderation?: { action: 'pause'; all: boolean; until: string; minutes: number } | { action: 'resume'; all: boolean }
+  /** Handed over from the chat's history after a gap (a desk's catch-up), not live. */
+  caughtUp?: boolean
 }
 
 // ---- tool results ------------------------------------------------------------------
@@ -203,6 +205,8 @@ export interface UiSession {
   monitors: number
   pending: number
   watches: WatchSpec[]
+  /** The desk this session holds, if any. */
+  desk?: string
 }
 
 /**
@@ -332,7 +336,11 @@ export interface ToolResult {
 // ---- bridge protocol: per-session MCP proxy <-> daemon, JSON over one WebSocket ----
 
 export type ClientMessage =
-  | { t: 'hello'; sessionId: string; label: string; channel: boolean; watches: WatchSpec[] }
+  /**
+   * `desk`: the proxy was started with --desk; it then speaks as that desk's session (shared/desks.ts).
+   * `startedAt`: when the proxy started (ms); of two proxies for one desk, the newer holds it.
+   */
+  | { t: 'hello'; sessionId: string; label: string; channel: boolean; watches: WatchSpec[]; desk?: string; startedAt?: number }
   | { t: 'call'; id: number; method: string; params: unknown }
 
 export type ServerMessage =

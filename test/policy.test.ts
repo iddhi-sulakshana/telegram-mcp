@@ -43,6 +43,31 @@ describe('decideSend', () => {
     const strict = parseConfig(JSON.stringify({ defaultPolicy: 'block' }))
     expect(decideSend(strict, { id: 99 }, { isWatching: false, file: true }).action).toBe('block')
   })
+  test("a desk's chat refuses every other session, whatever the lists, a watch or a /reply say", () => {
+    const other = { owner: 'desk', mine: false }
+    for (const ctx of [
+      { isWatching: false, desk: other },
+      { isWatching: true, desk: other },
+      { isWatching: true, takenOver: true, desk: other },
+      { isWatching: true, file: true, desk: other },
+    ]) {
+      const d = decideSend(config, { id: 10 }, ctx) // autoSend
+      expect(d.action).toBe('block')
+      expect(d.reason).toContain('desk "desk"')
+    }
+  })
+  test('the desk itself gets no bypass: its chats follow the usual rules', () => {
+    const mine = { owner: 'desk', mine: true }
+    expect(decideSend(config, { id: 10 }, { isWatching: false, desk: mine }).action).toBe('send') // autoSend
+    expect(decideSend(config, { id: 13 }, { isWatching: true, desk: mine }).action).toBe('approve') // requireApproval
+    expect(decideSend(config, { id: 12 }, { isWatching: false, desk: mine }).action).toBe('approve') // autoReply, not watched
+    expect(decideSend(config, { id: 12 }, { isWatching: true, desk: mine }).action).toBe('send') // autoReply, watched
+    expect(decideSend(config, { id: 10 }, { isWatching: false, file: true, desk: mine }).action).toBe('approve') // a file asks
+  })
+  test('blocked still beats a desk', () => {
+    const d = decideSend(config, { id: -1005550001111 }, { isWatching: true, desk: { owner: 'desk', mine: true } })
+    expect(d).toEqual({ action: 'block', reason: 'this chat is on the blocked list' })
+  })
   test('unlisted chats follow defaultPolicy', () => {
     expect(decideSend(config, { id: 99 }, off).action).toBe('approve')
     const strict = parseConfig(JSON.stringify({ defaultPolicy: 'block' }))

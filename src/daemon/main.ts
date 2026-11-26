@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { firstName } from '../shared/away'
-import { ConfigStore, isListed } from '../shared/config'
+import { ConfigStore, deskOf, isListed } from '../shared/config'
 import { ensureHome, makeLogger } from '../shared/files'
 import { getPaths, getPort, type Paths } from '../shared/paths'
 import { ensureToken, loadCredentials, openSecretStore, type SecretStore } from '../shared/secrets'
@@ -8,6 +8,7 @@ import { Approvals } from './approvals'
 import { Pauses } from './moderation'
 import { moderatorCommand } from '../shared/moderation'
 import { AvatarCache } from './avatars'
+import { DeskStore } from './desk-store'
 import { AwayResponder } from './away'
 import { PageBot } from './page-bot'
 import { Pager, pageTrigger } from './pager'
@@ -49,7 +50,19 @@ export async function createDaemon(o: DaemonOptions) {
       loadCredentials: () => loadCredentials(secrets),
       log,
     })
-  const hub = new SessionHub({ log, ...o.hub })
+  // Desks (config.json "desks") keep their watches and undelivered messages in desks.json across restarts.
+  const hub = new SessionHub({
+    log,
+    deskFor: chat => deskOf(store.get(), chat),
+    // While no valid config.json has loaded since start, which desks it lists is unknown: keep them all
+    // (desks.json stays as it is) until one does.
+    deskConfigured: name => store.writesRefused() !== null || Object.hasOwn(store.get().desks, name),
+    // A proxy that waited for a desk got it: it gets the catch-up a hello would have started.
+    onDeskHolder: sid => void service.catchUpDesk(sid).catch(e => log(`${sid}: catch-up failed: ${e instanceof Error ? e.message : String(e)}`)),
+    saveDelayMs: 250,
+    desks: new DeskStore(join(o.paths.home, 'desks.json'), log),
+    ...o.hub,
+  })
   const approvals = new Approvals()
 
   // Pages ring the menu bar / tray (they read them from /ui/state) and, with a pager bot, the phone.
@@ -96,7 +109,7 @@ export async function createDaemon(o: DaemonOptions) {
     hub,
     approvals,
     // A key that opens this one session's stream and nothing else: the URL ends up in Claude transcripts.
-    eventsUrl: sid => `ws://127.0.0.1:${port}/events?session=${sid}&key=${eventsKey(token, sid)}`,
+    eventsUrl: sid => `ws://127.0.0.1:${port}/events?session=${sid}&key=${eventsKey(token, sid, hub.eventsEpoch(sid))}`,
     recentPath: join(o.paths.home, 'recent.json'),
     downloadsDir: o.paths.downloads,
     mcpHome: o.paths.home,
@@ -123,6 +136,8 @@ export async function createDaemon(o: DaemonOptions) {
   store.watch()
 
   tg.onMessage(msg => {
+    // Every chat's @username as it comes, so the desk checks find a desk that lists a chat that way.
+    service.notePeer(msg.chat)
     if (msg.outgoing) {
       // The message's own time: a catch-up after sleep replays old sends, which mustn't count as just now.
       const sentAt = Date.parse(msg.date)
@@ -146,6 +161,8 @@ export async function createDaemon(o: DaemonOptions) {
     // A moderator's "/bots stop|resume" is handled here and goes no further: no page, no away reply,
     // and no session sees it. The pause is in force before this returns.
     if (moderatorCommand(store.get(), msg, tg.state().me?.id)) {
+      // A desk notes it as seen, so a later catch-up from history never hands it over.
+      hub.observe(msg)
       service
         .handleModeratorMessage(msg)
         .then(line => line && log(line))
@@ -174,9 +191,10 @@ export async function createDaemon(o: DaemonOptions) {
     void away.onIncoming(msg, trigger !== null)
     // Taking a chat off autoReply ends listening to it at once, even for existing watches. A chat
     // handed over with /reply is listened to for as long as the takeover lasts.
-    if (!hub.takeoverOf(msg.chatId) && !isListed(store.get(), 'autoReply', msg.chat)) return
+    // A desk chat's message that no session hears is still noted, so a catch-up never hands it over later.
+    if (!hub.takeoverOf(msg.chatId) && !isListed(store.get(), 'autoReply', msg.chat)) return hub.observe(msg)
     // While a moderator has Claude paused here, no session hears this chat.
-    if (service.paused(msg.chatId)) return
+    if (service.paused(msg.chatId)) return hub.observe(msg)
     const n = hub.dispatch(msg, m => describeMessage(store, m))
     if (n > 0) log(`message ${msg.chatId}:${msg.id} -> ${n} session(s)`)
   })
@@ -188,6 +206,8 @@ export async function createDaemon(o: DaemonOptions) {
 
   const timer = setInterval(() => {
     for (const sid of hub.sweep()) log(`session ${sid} expired, its watches are gone`)
+    // A desk whose catch-up found Telegram not connected yet gets it once Telegram is.
+    service.catchUpWaiting()
     service.sweepApprovals()
   }, 30_000)
 
@@ -204,6 +224,7 @@ export async function createDaemon(o: DaemonOptions) {
       clearInterval(pageTimer)
       away.stop()
       bot?.stop()
+      hub.flush()
       server.stop(true)
       store.close()
       await tg.stop()

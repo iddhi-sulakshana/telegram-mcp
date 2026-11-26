@@ -4,7 +4,10 @@ import type { PageAction } from './pager'
 import type { ServerWebSocket } from 'bun'
 import type { ConfigStore } from '../shared/config'
 import { SEND_MODES } from '../shared/contacts'
+import { deskName, deskSessionId } from '../shared/desks'
 import { UI_FEATURES_HEADER, type ClientMessage, type SendMode, type ServerMessage } from '../shared/protocol'
+import { oneLine } from '../shared/text'
+import { cleanWatches } from './desk-store'
 import type { Service } from './service'
 import type { SessionHub } from './sessions'
 import type { TelegramPort } from './telegram'
@@ -48,8 +51,9 @@ function sameToken(given: string | null, token: string): boolean {
  * The key in a Monitor URL. It opens that one session's event stream and nothing else, so the
  * URL (which the model sees, and Claude Code keeps in its transcripts) never carries the token.
  */
-export function eventsKey(token: string, sessionId: string): string {
-  return createHmac('sha256', token).update(`events:${sessionId}`).digest('hex').slice(0, 32)
+export function eventsKey(token: string, sessionId: string, epoch = ''): string {
+  // A desk's key also names its holder (SessionHub#eventsEpoch); an ordinary session's is unchanged.
+  return createHmac('sha256', token).update(epoch ? `events:${sessionId}:${epoch}` : `events:${sessionId}`).digest('hex').slice(0, 32)
 }
 
 /**
@@ -93,11 +97,16 @@ export function startServer(o: ServerOptions) {
 
       if (url.pathname === '/events') {
         const sid = url.searchParams.get('session')
-        if (!sid || !/^s_[a-z0-9]{8}$/.test(sid)) {
+        // An ordinary session's random id, or a desk's (d_<desk name>).
+        if (!sid || !/^(s_[a-z0-9]{8}|d_[a-z0-9][a-z0-9_-]{0,31})$/.test(sid)) {
           return new Response(authed ? 'bad session id\n' : 'unauthorized\n', { status: authed ? 400 : 401 })
         }
-        if (!authed && !sameToken(url.searchParams.get('key'), eventsKey(o.token, sid))) {
-          return new Response('unauthorized\n', { status: 401 })
+        if (!authed && !sameToken(url.searchParams.get('key'), eventsKey(o.token, sid, o.hub.eventsEpoch(sid)))) {
+          // A desk's Monitor URL changes when another session gets the desk: say where the current one is.
+          const hint = sid.startsWith('d_')
+            ? "unauthorized: this desk's Monitor URL changed (another session held the desk). Call telegram_status for the current one; if it says another session holds the desk, this session no longer acts for it.\n"
+            : 'unauthorized\n'
+          return new Response(hint, { status: 401 })
         }
         return server.upgrade(req, { data: { kind: 'events', sessionId: sid } })
           ? undefined
@@ -264,16 +273,57 @@ export function startServer(o: ServerOptions) {
           return
         }
         if (msg.t === 'hello') {
-          ws.data.sessionId = msg.sessionId
-          o.hub.attachProxy(msg.sessionId, { label: msg.label, channel: msg.channel, watches: msg.watches ?? [] }, ws)
+          // A proxy started with --desk speaks as the desk's one session; a name that isn't valid, or
+          // that config.json doesn't list, is ignored.
+          let desk = deskName(msg.desk)
+          // While no valid config.json has loaded since start, a desk desks.json kept is taken on trust.
+          const kept = desk !== null && o.store.writesRefused() !== null && o.hub.deskOf(deskSessionId(desk)) === desk
+          if (desk && !kept && !Object.hasOwn(o.store.get().desks, desk)) {
+            o.log(`session ${msg.sessionId} asked for desk "${desk}", which config.json doesn't list: an ordinary session`)
+            desk = null
+          }
+          // Without a desk, only an ordinary session's id (a desk's d_ id comes only from --desk).
+          if (!desk && (typeof msg.sessionId !== 'string' || !/^s_[a-z0-9]{8}$/.test(msg.sessionId))) {
+            ws.close(1008, 'bad session id')
+            return
+          }
+          const sid = desk ? deskSessionId(desk) : msg.sessionId
+          ws.data.sessionId = sid
+          const startedAt = typeof msg.startedAt === 'number' && Number.isFinite(msg.startedAt) ? msg.startedAt : 0
+          // Labels and watches are kept for a desk (desks.json) and shown on header lines: take only well-formed ones.
+          const label = (typeof msg.label === 'string' ? oneLine(msg.label).slice(0, 200) : '') || sid
+          const watches = cleanWatches(Array.isArray(msg.watches) ? msg.watches : [])
+          const current = o.hub.attachProxy(sid, { label, channel: msg.channel === true, watches, desk, startedAt }, ws)
           send(ws, { t: 'welcome', telegram: o.tg.state() })
-          o.log(`session ${msg.sessionId} connected (${msg.label}${msg.channel ? ', channel' : ''})`)
+          if (!current) {
+            // A newer proxy holds this desk, or it is kept for one. The connection stays (closing it would
+            // only make the proxy reconnect in a loop); every call on it is refused with an error that says
+            // why, and it gets the desk if that proxy doesn't come back.
+            const holds = o.hub.heldDesks().includes(sid)
+            o.log(`session ${sid} (${label}) turned away: ${holds ? 'a newer proxy holds' : 'it is kept for a newer proxy of'} desk ${desk}`)
+            return
+          }
+          o.log(`session ${sid} connected (${label}${msg.channel === true ? ', channel' : ''}${desk ? `, desk ${desk}` : ''})`)
+          // A desk that comes back gets what its chats said while nothing could hand it over.
+          if (desk) void o.service.catchUpDesk(sid).catch(e => o.log(`desk ${desk}: catch-up failed: ${e instanceof Error ? e.message : String(e)}`))
           return
         }
         if (msg.t === 'call') {
           const sid = ws.data.sessionId
           if (!sid) {
             send(ws, { t: 'result', id: msg.id, ok: false, error: 'say hello first' })
+            return
+          }
+          if (!o.hub.isCurrentProxy(sid, ws)) {
+            const desk = o.hub.deskOf(sid)
+            send(ws, {
+              t: 'result',
+              id: msg.id,
+              ok: false,
+              error: o.hub.heldDesks().includes(sid)
+                ? `Another Claude session now holds desk "${desk}" (it started later with --desk ${desk}). This session no longer acts for that desk: nothing was done. Only one session should hold a desk; close this one or start it without --desk.`
+                : `Desk "${desk}" is kept for a session that started later with --desk ${desk} and is reconnecting. This session doesn't act for it now: nothing was done. If that session doesn't come back within about half a minute, this one gets the desk; call telegram_status then for its Monitor URL.`,
+            })
             return
           }
           o.service

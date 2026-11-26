@@ -45,5 +45,8 @@
   },
   "files": {
     "protectedDirs": ["~/work/clients", "/srv/backups"]
+  },
+  "desks": {
+    "desk": { "chats": [] }
   }
 }

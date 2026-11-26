@@ -469,6 +469,27 @@ describe('moderator commands in the daemon', () => {
     }
   })
 
+  test("a resume in a chat a desk lists by @username is told only to the desk, like the pause", async () => {
+    const PUB: PeerInfo = { id: -1009900001, type: 'group', name: 'Pub', username: 'pubgroup' }
+    const { tg, d, frames } = await daemon({ rules: { autoReply: ['qa', '@pubgroup'], autoSend: ['anna'] }, desks: { desk: { chats: ['@pubgroup'] } } })
+    tg.add(PUB)
+    // s1 (the helper's session) has an old watch there, from before the desk: it hears nothing now.
+    d.hub.addWatch('s1', { chatId: PUB.id, chatLabel: 'Pub' })
+    const deskFrames: string[] = []
+    d.hub.attachProxy('d_desk', { label: 'desk', channel: false, watches: [], desk: 'desk', startedAt: Date.now() }, { send() {} })
+    d.hub.attachMonitor('d_desk', { send: (f: string) => deskFrames.push(f) })
+    d.hub.addWatch('d_desk', { chatId: PUB.id, chatLabel: 'Pub' })
+    tg.emit(PUB.id, '/bots stop 30m', LEO_MOD.id)
+    await settle()
+    expect(deskFrames.some(f => f.includes('Paused by a moderator'))).toBe(true)
+    expect(frames.some(f => f.includes('Paused by a moderator'))).toBe(false)
+    // The owner's resume (CLI or menu bar) carries only the chat id.
+    d.service.resumeLocally(PUB.id)
+    expect(deskFrames.some(f => f.includes('Moderator pause lifted'))).toBe(true)
+    expect(frames.some(f => f.includes('Moderator pause lifted'))).toBe(false)
+    await d.stop()
+  })
+
   test('sessions are never told "lifted" for a chat that is still paused', async () => {
     const { frames, d, call, say } = await daemon()
     await call('telegram_watch', { chat: 'qa' })
