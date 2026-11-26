@@ -187,6 +187,68 @@ describe('desk sessions through the daemon', () => {
     expect(again.events).toHaveLength(0)
   })
 
+  test('the catch-up fills the gap even when a newer message came in live before the desk was back', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'tgmcp-desk-race-'))
+    const a = await start(CONFIG, home)
+    const before = await connect(a.daemon, { sessionId: 's_deskone1', desk: 'desk' })
+    await before.client.call('telegram_watch', { chat: 'leo' })
+    a.tg.emit(LEO.id, 'handled', LEO.id, { id: 3001 })
+    await settle()
+    before.client.close()
+    await a.daemon.stop()
+
+    const b = await start(CONFIG, home)
+    const at = (id: number, text: string) => ({
+      id, chatId: LEO.id, date: new Date().toISOString(), from: LEO, outgoing: false, text, media: null, replyToId: null, topicId: null,
+    })
+    b.tg.history.set(LEO.id, [at(3001, 'handled'), at(3003, 'missed 1'), at(3005, 'missed 2'), at(3007, 'live after restart')])
+    b.tg.emit(LEO.id, 'live after restart', LEO.id, { id: 3007 })
+    let reads = 0
+    const read = b.tg.getHistory.bind(b.tg)
+    b.tg.getHistory = (chatId, opts) => {
+      reads++
+      return read(chatId, opts)
+    }
+    const after = await connect(b.daemon, { sessionId: 's_desktwo2', desk: 'desk' })
+    await settle()
+    expect(after.events.map(e => e.text)).toEqual(['live after restart', 'missed 1', 'missed 2'])
+    expect(reads).toBe(1)
+    // Once per daemon run: a reconnect reads no history again.
+    after.client.close()
+    await settle()
+    await connect(b.daemon, { sessionId: 's_deskthr3', desk: 'desk' })
+    await settle()
+    expect(reads).toBe(1)
+  })
+
+  test('a message the desk never heard live (its chat was off autoReply) is not caught up after a restart', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'tgmcp-desk-gated-'))
+    const a = await start(CONFIG, home)
+    const before = await connect(a.daemon, { sessionId: 's_deskone1', desk: 'desk' })
+    await before.client.call('telegram_watch', { chat: 'leo' })
+    a.tg.emit(LEO.id, 'handled', LEO.id, { id: 4001 })
+    await settle()
+    // The owner takes leo off autoReply for a while: sessions must not hear what is said meanwhile.
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ ...CONFIG, rules: { autoReply: ['anna'] } }))
+    a.daemon.store.reload()
+    a.tg.emit(LEO.id, 'said while off autoReply', LEO.id, { id: 4002 })
+    await settle()
+    expect(before.events.map(e => e.text)).toEqual(['handled'])
+    writeFileSync(join(home, 'config.json'), JSON.stringify(CONFIG))
+    a.daemon.store.reload()
+    before.client.close()
+    await a.daemon.stop()
+
+    const b = await start(CONFIG, home)
+    const at = (id: number, text: string) => ({
+      id, chatId: LEO.id, date: new Date().toISOString(), from: LEO, outgoing: false, text, media: null, replyToId: null, topicId: null,
+    })
+    b.tg.history.set(LEO.id, [at(4001, 'handled'), at(4002, 'said while off autoReply'), at(4003, 'missed')])
+    const after = await connect(b.daemon, { sessionId: 's_desktwo2', desk: 'desk' })
+    await settle()
+    expect(after.events.map(e => e.text)).toEqual(['missed'])
+  })
+
   test('a desk name that is not valid is ignored: the proxy is an ordinary session', async () => {
     const { daemon } = await start()
     const odd = await connect(daemon, { sessionId: 's_oddname1', desk: 'Not A Desk' })

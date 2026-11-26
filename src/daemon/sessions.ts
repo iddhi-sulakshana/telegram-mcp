@@ -19,12 +19,12 @@ interface Session {
   disconnectedAt: number | null
   /** The desk this session holds (its id is then deskSessionId(desk)), or null for an ordinary session. */
   desk: string | null
-  /** A desk's newest message id handed over per chat (kept in desks.json). */
+  /** A desk's newest message id the daemon saw per chat, heard or not (kept in desks.json). */
   seen: Map<number, number>
   /** `seen` as desks.json had it when the daemon started: nothing up to it is handed over again. */
   floor: Map<number, number>
-  /** Message ids handed to the desk since the daemon started, per chat, so a replay isn't handed over twice. */
-  handed: Map<number, Set<number>>
+  /** Message ids the daemon saw in each desk chat since it started, handed over or not, so none is handed over twice or late. */
+  observed: Map<number, Set<number>>
 }
 
 export interface HubOptions {
@@ -123,19 +123,19 @@ export class SessionHub {
   }
 
   /**
-   * Whether this message is one the desk already has: handed over since the daemon started, or no
-   * newer than the lower bound (a catch-up's `after`, else what desks.json had at start). Ids only
-   * grow within a chat. Not "older than the newest": a catch-up may still bring an older missed one.
+   * Whether the daemon already saw this message of a desk chat: since it started (handed over or
+   * not), or no newer than what desks.json had at start. Ids only grow within a chat. Not "older than
+   * the newest": a catch-up may still bring an older missed one after a newer one came in live.
    */
-  #alreadyHanded(s: Session, chatId: number, id: number, after?: number): boolean {
-    if (s.handed.get(chatId)?.has(id)) return true
-    const lower = after ?? s.floor.get(chatId)
-    return lower !== undefined && id <= lower
+  #alreadySeen(s: Session, chatId: number, id: number): boolean {
+    if (s.observed.get(chatId)?.has(id)) return true
+    const floor = s.floor.get(chatId)
+    return floor !== undefined && id <= floor
   }
 
-  #markHanded(s: Session, chatId: number, id: number): void {
-    let ids = s.handed.get(chatId)
-    if (!ids) s.handed.set(chatId, (ids = new Set()))
+  #markSeen(s: Session, chatId: number, id: number): void {
+    let ids = s.observed.get(chatId)
+    if (!ids) s.observed.set(chatId, (ids = new Set()))
     ids.add(id)
     // Telegram's own client drops repeats too; this only has to cover a catch-up window.
     if (ids.size > 2_000) ids.delete(ids.values().next().value!)
@@ -143,7 +143,30 @@ export class SessionHub {
     this.#touch(s)
   }
 
-  /** The newest message id this chat handed to the desk session, or null. */
+  /** The desk session that owns this message's chat, if that desk has a session. */
+  #deskSessionFor(chat: { id: number; username?: string | null }): Session | null {
+    const desk = this.#deskFor(chat)
+    return desk === null ? null : (this.#sessions.get(deskSessionId(desk)) ?? null)
+  }
+
+  /**
+   * A desk chat's message that no session hears (the chat is paused or off autoReply, or it is a
+   * moderator's command): noted as seen, so a later catch-up never hands it over.
+   */
+  observe(msg: IncomingMessage): void {
+    if (msg.outgoing) return
+    const s = this.#deskSessionFor(msg.chat)
+    if (!s || this.#alreadySeen(s, msg.chatId, msg.id)) return
+    this.#markSeen(s, msg.chatId, msg.id)
+    this.#save()
+  }
+
+  /** Where a catch-up of this desk chat starts: the newest id desks.json had at start, or null (nothing to start from). */
+  catchUpFrom(id: string, chatId: number): number | null {
+    return this.#sessions.get(id)?.floor.get(chatId) ?? null
+  }
+
+  /** The newest message id the daemon saw in this desk chat, or null. */
   lastSeen(id: string, chatId: number): number | null {
     return this.#sessions.get(id)?.seen.get(chatId) ?? null
   }
@@ -164,7 +187,7 @@ export class SessionHub {
         desk: null,
         seen: new Map(),
         floor: new Map(),
-        handed: new Map(),
+        observed: new Map(),
       }
       this.#sessions.set(id, s)
     }
@@ -442,13 +465,19 @@ export class SessionHub {
 
   /**
    * Routes one incoming Telegram message to every session with a matching watch, or that has the chat
-   * taken over. A desk's chat goes only to the desk's session. `after` is set by a catch-up from the
-   * chat's history: ids up to it are the desk's already.
+   * taken over. A desk's chat goes only to the desk's session, once: a message it already saw (a
+   * replay, or a catch-up of one it saw live) goes nowhere.
    */
-  dispatch(msg: IncomingMessage, describe: (msg: IncomingMessage) => Omit<TgEvent, 'seq' | 'watchIds'>, opts: { after?: number } = {}): number {
+  dispatch(msg: IncomingMessage, describe: (msg: IncomingMessage) => Omit<TgEvent, 'seq' | 'watchIds'>): number {
     if (msg.outgoing) return 0
     const takenBy = this.takeoverOf(msg.chatId)
     const desk = this.#deskFor(msg.chat)
+    const deskSession = desk === null ? null : (this.#sessions.get(deskSessionId(desk)) ?? null)
+    if (deskSession) {
+      if (this.#alreadySeen(deskSession, msg.chatId, msg.id)) return 0
+      // Seen even if no watch matches, so a later catch-up doesn't hand it over.
+      this.#markSeen(deskSession, msg.chatId, msg.id)
+    }
     let delivered = 0
     for (const s of this.#sessions.values()) {
       if (desk !== null && s.desk !== desk) continue
@@ -461,11 +490,6 @@ export class SessionHub {
       const ids = hits.map(w => w.id)
       if (takenBy === s.id) ids.push('takeover')
       if (ids.length === 0) continue
-      if (s.desk !== null) {
-        // Telegram's catch-up (or the history catch-up) can hand over a message the desk already has.
-        if (this.#alreadyHanded(s, msg.chatId, msg.id, opts.after)) continue
-        this.#markHanded(s, msg.chatId, msg.id)
-      }
       const event: TgEvent = { ...describe(msg), seq: ++this.#seq, watchIds: ids }
       this.#deliver(s, event)
       delivered++

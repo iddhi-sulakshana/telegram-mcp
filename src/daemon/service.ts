@@ -204,6 +204,8 @@ export class Service {
   #inflight = new Map<number, Set<Promise<unknown>>>()
   /** When each chat last got a stop or a resume ack, so a repeated /bots command doesn't make the chat noisy. */
   #lastAck = new Map<string, number>()
+  /** Desks whose history catch-up ran since the daemon started (catchUpDesk). */
+  #caughtUp = new Set<string>()
 
   get #mcpHome(): string {
     return this.d.mcpHome ?? join(homedir(), '.config', 'telegram-mcp')
@@ -285,41 +287,46 @@ export class Service {
   }
 
   /**
-   * A desk is back (its proxy said hello): hand it the messages of its own chats that it never got,
-   * read from each chat's history after the newest id it has. That covers what Telegram's own catch-up
-   * can't (a long outage). Only the desk's own chats: other sessions may hear the rest, and would
-   * get them twice. Chats it has never heard have no starting point and are skipped. Returns how many.
+   * A desk is back (its proxy said hello) for the first time since the daemon started: hand it the
+   * messages of its own chats that the daemon never saw, read from each chat's history after the
+   * newest id desks.json had at start. That covers what Telegram's own catch-up can't (a long
+   * outage). A message the daemon saw live is never handed over again, heard or not (paused, off
+   * autoReply). Only the desk's own chats: other sessions may hear the rest, and would get them
+   * twice. Chats with no starting point are skipped. Once per desk per daemon run. Returns how many.
    */
   async catchUpDesk(sid: string, waitMs = 60_000): Promise<number> {
     const { hub, tg, store } = this.d
     const desk = hub.deskOf(sid)
-    if (!desk) return 0
+    if (!desk || this.#caughtUp.has(desk)) return 0
     // Right after a daemon start Telegram may still be connecting.
     for (const end = Date.now() + waitMs; tg.state().phase !== 'connected' && Date.now() < end; ) await new Promise(r => setTimeout(r, 1_000))
     if (tg.state().phase !== 'connected') {
-      this.d.log?.(`desk ${desk}: no catch-up, Telegram is not connected`)
+      this.d.log?.(`desk ${desk}: no catch-up yet, Telegram is not connected; it runs on the desk's next hello`)
       return 0
     }
+    if (this.#caughtUp.has(desk)) return 0
+    this.#caughtUp.add(desk)
     let handed = 0
     for (const chatId of new Set(hub.watches(sid).map(w => w.chatId))) {
-      const after = hub.lastSeen(sid, chatId)
-      if (after === null) continue
+      const from = hub.catchUpFrom(sid, chatId)
+      if (from === null) continue
       try {
         const peer = await this.#peerById(chatId)
         const config = store.get()
-        // The same gates as a live message: the desk's own chat, still on autoReply, not paused.
-        if (deskOf(config, peer) !== desk || !isListed(config, 'autoReply', peer) || this.paused(chatId)) continue
+        if (deskOf(config, peer) !== desk) continue
         const history = await tg.getHistory(chatId, { limit: CATCH_UP_LIMIT })
-        if (history.length === CATCH_UP_LIMIT && history.every(m => m.id > after)) {
+        if (history.length === CATCH_UP_LIMIT && history.every(m => m.id > from)) {
           this.d.log?.(`desk ${desk}: chat ${chatId} may have missed more than ${CATCH_UP_LIMIT} messages; only the newest ${CATCH_UP_LIMIT} are caught up`)
         }
+        // The same gates as a live message: still on autoReply, not paused, no moderator command.
+        // One that fails them is only noted, so it isn't handed over on a later run either.
+        const heard = isListed(config, 'autoReply', peer) && !this.paused(chatId)
         const me = tg.state().me?.id
         for (const m of [...history].sort((a, b) => a.id - b.id)) {
-          if (m.outgoing || m.id <= after) continue
+          if (m.outgoing || m.id <= from) continue
           const msg: IncomingMessage = { ...m, chat: peer }
-          // A moderator's /bots command never reaches a session, late or not.
-          if (moderatorCommand(config, msg, me)) continue
-          if (hub.dispatch(msg, x => describeMessage(store, x), { after }) > 0) handed++
+          if (!heard || moderatorCommand(config, msg, me)) hub.observe(msg)
+          else if (hub.dispatch(msg, x => describeMessage(store, x)) > 0) handed++
         }
       } catch (e) {
         this.d.log?.(`desk ${desk}: catch-up of chat ${chatId} failed: ${errText(e)}`)

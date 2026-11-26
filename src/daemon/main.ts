@@ -153,6 +153,8 @@ export async function createDaemon(o: DaemonOptions) {
     // A moderator's "/bots stop|resume" is handled here and goes no further: no page, no away reply,
     // and no session sees it. The pause is in force before this returns.
     if (moderatorCommand(store.get(), msg, tg.state().me?.id)) {
+      // A desk notes it as seen, so a later catch-up from history never hands it over.
+      hub.observe(msg)
       service
         .handleModeratorMessage(msg)
         .then(line => line && log(line))
@@ -181,9 +183,10 @@ export async function createDaemon(o: DaemonOptions) {
     void away.onIncoming(msg, trigger !== null)
     // Taking a chat off autoReply ends listening to it at once, even for existing watches. A chat
     // handed over with /reply is listened to for as long as the takeover lasts.
-    if (!hub.takeoverOf(msg.chatId) && !isListed(store.get(), 'autoReply', msg.chat)) return
+    // A desk chat's message that no session hears is still noted, so a catch-up never hands it over later.
+    if (!hub.takeoverOf(msg.chatId) && !isListed(store.get(), 'autoReply', msg.chat)) return hub.observe(msg)
     // While a moderator has Claude paused here, no session hears this chat.
-    if (service.paused(msg.chatId)) return
+    if (service.paused(msg.chatId)) return hub.observe(msg)
     const n = hub.dispatch(msg, m => describeMessage(store, m))
     if (n > 0) log(`message ${msg.chatId}:${msg.id} -> ${n} session(s)`)
   })

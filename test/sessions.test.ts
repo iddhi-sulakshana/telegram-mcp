@@ -273,20 +273,41 @@ describe('SessionHub', () => {
         expect(second.pending('d_desk')).toBe(1)
       })
 
-      test('a catch-up still hands over older missed messages after a newer one arrived live', () => {
-        const hub = new SessionHub({ deskFor, desks: new DeskStore(path()) })
-        hub.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk' }, sink())
-        hub.addWatch('d_desk', { chatId: -5, chatLabel: 'g' })
-        hub.dispatch(msg(-5, 7, 'seen', { id: 100 }), describeMsg)
-        const after = hub.lastSeen('d_desk', -5)!
-        // While the catch-up reads the history, a new message arrives live.
+      test('after a restart, a catch-up hands over the gap even when a newer message arrived live first', () => {
+        const file = path()
+        const first = new SessionHub({ deskFor, desks: new DeskStore(file) })
+        first.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk' }, sink())
+        first.addWatch('d_desk', { chatId: -5, chatLabel: 'g' })
+        first.dispatch(msg(-5, 7, 'seen', { id: 100 }), describeMsg)
+
+        const hub = new SessionHub({ deskFor, desks: new DeskStore(file) })
+        // The catch-up starts where desks.json was at start, not at the newest message since.
+        expect(hub.catchUpFrom('d_desk', -5)).toBe(100)
         hub.dispatch(msg(-5, 7, 'live', { id: 105 }), describeMsg)
+        expect(hub.catchUpFrom('d_desk', -5)).toBe(100)
         // The history then has 101..105: the missed ones go over, the live one isn't repeated.
-        for (const id of [101, 102, 105]) hub.dispatch(msg(-5, 7, `history ${id}`, { id }), describeMsg, { after })
-        // Ids up to `after` are never handed again.
-        expect(hub.dispatch(msg(-5, 7, 'old', { id: 99 }), describeMsg, { after })).toBe(0)
+        for (const id of [101, 102, 105]) hub.dispatch(msg(-5, 7, `history ${id}`, { id }), describeMsg)
+        expect(hub.dispatch(msg(-5, 7, 'old', { id: 99 }), describeMsg)).toBe(0)
         expect(hub.drain('d_desk').events.map(e => e.text)).toEqual(['seen', 'live', 'history 101', 'history 102'])
         expect(hub.lastSeen('d_desk', -5)).toBe(105)
+      })
+
+      test("a desk chat's message no session heard (paused, off autoReply, not watched) is never handed over later", () => {
+        const file = path()
+        const hub = new SessionHub({ deskFor, desks: new DeskStore(file) })
+        hub.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk' }, sink())
+        // Not watched: dispatch hands nothing, but the desk has seen it.
+        expect(hub.dispatch(msg(-5, 7, 'unwatched', { id: 200 }), describeMsg)).toBe(0)
+        // Paused or off autoReply: the daemon never dispatches it, only notes it.
+        hub.observe(msg(-5, 7, 'paused', { id: 201 }))
+        hub.addWatch('d_desk', { chatId: -5, chatLabel: 'g' })
+        expect(hub.dispatch(msg(-5, 7, 'unwatched', { id: 200 }), describeMsg)).toBe(0)
+        expect(hub.dispatch(msg(-5, 7, 'paused', { id: 201 }), describeMsg)).toBe(0)
+        // After a restart neither is above the catch-up's starting point.
+        expect(new SessionHub({ deskFor, desks: new DeskStore(file) }).catchUpFrom('d_desk', -5)).toBe(201)
+        // Chats on no desk are not noted.
+        hub.observe(msg(-6, 7, 'elsewhere', { id: 300 }))
+        expect(hub.lastSeen('d_desk', -6)).toBeNull()
       })
 
       test('ordinary sessions are not written to disk', () => {
