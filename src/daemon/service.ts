@@ -306,7 +306,7 @@ export class Service {
    * proxy holds, once Telegram is connected. The daemon calls this on each sweep.
    */
   catchUpWaiting(): void {
-    if (this.d.tg.state().phase !== 'connected') return
+    if (this.d.tg.state().phase !== 'connected' || this.d.store.writesRefused()) return
     for (const sid of this.d.hub.heldDesks()) {
       const desk = this.d.hub.deskOf(sid)
       if (!desk || this.#caughtUp.has(desk)) continue
@@ -318,6 +318,11 @@ export class Service {
     const { hub, tg, store } = this.d
     const desk = hub.deskOf(sid)
     if (!desk || this.#caughtUp.has(desk)) return 0
+    // Which chats are the desk's is unknown until a valid config.json loads: it runs after that.
+    if (store.writesRefused()) {
+      this.d.log?.(`desk ${desk}: no catch-up yet, config.json has not loaded; it runs once it has`)
+      return 0
+    }
     // Right after a daemon start Telegram may still be connecting.
     for (const end = Date.now() + waitMs; tg.state().phase !== 'connected' && Date.now() < end; ) await new Promise(r => setTimeout(r, Math.min(CATCH_UP_POLL_MS, waitMs)))
     if (tg.state().phase !== 'connected') {
@@ -1525,7 +1530,11 @@ export class Service {
         // By id first; a desk may list the chat by @username, which needs the chat's username.
         let owner = deskOf(store.get(), { id: w.chatId })
         if (owner === null && Object.keys(store.get().desks).length) {
-          const username = await this.#peerById(w.chatId).then(p => p.username, () => null)
+          // The cached peer only: no dialog reload per watch while Telegram is unsteady.
+          const username = await this.d.tg.getPeer(w.chatId).then(
+            p => p.username,
+            () => null,
+          )
           if (username) owner = deskOf(store.get(), { id: w.chatId, username })
         }
         const silent = owner !== null && owner !== desk ? `, belongs to desk "${owner}": this session hears nothing there` : ''

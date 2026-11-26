@@ -1,5 +1,5 @@
 import { deskSessionId } from '../shared/desks'
-import { DESK_QUEUE_MAX_AGE_MS, type DeskState, type DeskStore } from './desk-store'
+import { DESK_QUEUE_MAX_AGE_MS, EPOCH_HOLDERS_MAX, type DeskState, type DeskStore } from './desk-store'
 import type { IncomingMessage, ServerMessage, TgEvent, WatchSpec } from '../shared/protocol'
 import { fieldName, messageBody, quoted, senderLabel } from '../shared/text'
 
@@ -27,7 +27,7 @@ interface Session {
   queue: TgEvent[]
   /** Queued messages dropped because the queue was full, not yet reported. */
   dropped: number
-  /** A desk's queued messages that passed the age limit (or could not be read back), not yet reported. */
+  /** A desk's queued messages that passed the age limit, not yet reported. */
   expired: number
   disconnectedAt: number | null
   /** The desk this session holds (its id is then deskSessionId(desk)), or null for an ordinary session. */
@@ -44,6 +44,12 @@ interface Session {
    * the daemon started. Meanwhile an older proxy waits in `standby` instead of taking it. 0: not held.
    */
   holdUntil: number
+  /**
+   * For a desk: the start times of the proxies that held it under the current epoch (a Claude restart or
+   * /mcp keeps the epoch). One of them coming back while another holds the desk is a second Claude
+   * session with the same Monitor URL, so the epoch changes then.
+   */
+  epochHolders: Set<number>
   /** For a desk: older proxies that were turned away and are still connected, newest-started first in line. */
   standby: Map<Sink, { startedAt: number; label: string; channel: boolean }>
   /** A desk's newest message id the daemon saw per chat, heard or not (kept in desks.json). */
@@ -150,6 +156,7 @@ export class SessionHub {
       s.desk = desk
       s.holderStartedAt = d.holder
       s.epoch = d.epoch
+      s.epochHolders = new Set(d.epochHolders.length ? d.epochHolders : d.holder > 0 ? [d.holder] : [])
       // Its holder may be on its way back: an older proxy that says hello first waits for it.
       if (d.holder > 0) s.holdUntil = this.#now() + this.#deskHoldMs
       for (const w of d.watches) s.watches.set(w.id, w)
@@ -192,6 +199,7 @@ export class SessionHub {
         label: s.label,
         holder: s.holderStartedAt,
         epoch: s.epoch,
+        epochHolders: [...s.epochHolders].slice(-EPOCH_HOLDERS_MAX),
         watches: [...s.watches.values()],
         // A /reply or moderator notice belongs to the run that sent it (takeovers aren't kept), so it isn't.
         queue: s.queue.filter(e => !e.takeover && !e.moderation),
@@ -280,6 +288,7 @@ export class SessionHub {
         holderStartedAt: 0,
         epoch: 0,
         holdUntil: 0,
+        epochHolders: new Set(),
         standby: new Map(),
         seen: new Map(),
         floor: new Map(),
@@ -309,16 +318,28 @@ export class SessionHub {
     const known = this.#sessions.has(id)
     const s = this.#ensure(id, info.label)
     if (info.desk) s.desk = info.desk
+    if (s.desk !== null) {
+      s.standby.delete(sink)
+      // A waiting proxy whose turn came goes first, before any new hello.
+      this.#promote(s)
+    }
     const replaced = s.proxy !== null && s.proxy !== sink
     if (s.desk !== null) {
       const started = info.startedAt ?? 0
-      s.standby.delete(sink)
       // While no proxy holds the desk it is kept for its last holder for a while (after a daemon start,
       // or after that proxy left), so an older proxy that says hello first doesn't take it.
       const held = s.proxy === null && this.#now() < s.holdUntil
       if ((replaced || held) && started < s.holderStartedAt) {
         s.standby.set(sink, { startedAt: started, label: info.label, channel: info.channel })
         this.#log(`desk ${s.desk}: an older proxy (${info.label}) was turned away; ${replaced ? 'a newer one holds it' : 'it is kept for a newer one'}`)
+        // It held the desk under this epoch, so its Claude session has the Monitor URL the holder uses:
+        // a second Claude session for the desk. The URL changes; the holder finds the new one in telegram_status.
+        if (s.epochHolders.has(started)) {
+          this.#log(`desk ${s.desk}: ${info.label} held it under the same Monitor URL; the URL changes`)
+          this.#newEpoch(s)
+          s.epochHolders.add(s.holderStartedAt)
+        }
+        this.#save()
         return false
       }
       if (replaced && s.proxy) {
@@ -326,15 +347,19 @@ export class SessionHub {
         // Monitors close and its Monitor URL stops working. It waits, and gets the desk back once this one is gone.
         s.standby.set(s.proxy, { startedAt: s.holderStartedAt, label: s.label, channel: s.channel })
         this.#newEpoch(s)
+      } else if (s.epoch === 0 || started < s.holderStartedAt) {
+        // A desk's first holder ever (no saved state): an epoch from the clock, so a Monitor URL made for a
+        // desk state since lost never works again. An older proxy than the last holder, past the hold, is
+        // another Claude session, never the holder's own restart: it gets a new URL too.
+        this.#newEpoch(s)
       }
-      // A desk's first holder ever (no saved state): an epoch from the clock, so a Monitor URL made for a
-      // desk state since lost never works again. Otherwise, with no proxy holding the desk (a Claude
-      // restart, /mcp, a daemon restart), the Monitor URL stays.
-      if (s.epoch === 0) this.#newEpoch(s)
+      // Otherwise, with no proxy holding the desk (a Claude restart, /mcp, a daemon restart), a newer
+      // proxy keeps the Monitor URL and the Monitors.
       if (started !== s.holderStartedAt) {
         s.holderStartedAt = started
         this.#touch(s)
       }
+      s.epochHolders.add(started)
       s.holdUntil = 0
     }
     s.label = info.label
@@ -371,12 +396,12 @@ export class SessionHub {
     return !s || s.desk === null || s.proxy === sink
   }
 
-  /** The desk this session holds, or null. */
   /** Ids of the desk sessions a proxy holds now. */
   heldDesks(): string[] {
     return [...this.#sessions.values()].filter(s => s.desk !== null && s.proxy !== null).map(s => s.id)
   }
 
+  /** The desk this session holds, or null. */
   deskOf(id: string): string | null {
     return this.#sessions.get(id)?.desk ?? null
   }
@@ -391,9 +416,15 @@ export class SessionHub {
     s.proxy = null
     s.disconnectedAt = this.#now()
     if (s.desk !== null) {
-      // Kept for this proxy for a while (a blip, a reconnect); then a waiting one gets it (sweep).
+      // Kept for this proxy for a while (a blip, a reconnect); then a waiting one gets it.
       s.holdUntil = this.#now() + this.#deskHoldMs
       this.#promote(s)
+      const timer = setTimeout(() => {
+        if (this.#sessions.get(s.id) !== s) return
+        this.#promote(s)
+        this.#save()
+      }, this.#deskHoldMs + 50)
+      ;(timer as { unref?: () => void }).unref?.()
     }
   }
 
@@ -401,6 +432,7 @@ export class SessionHub {
   #newEpoch(s: Session): void {
     for (const m of s.monitors) (m as { close?: () => void }).close?.()
     s.monitors.clear()
+    s.epochHolders.clear()
     // From the clock, never just +1: a desk whose saved state was lost (desks.json set aside, or the desk
     // taken out and put back) must not reach an epoch an old holder's Monitor URL was made for.
     s.epoch = Math.max(s.epoch + 1, this.#now())
@@ -416,6 +448,7 @@ export class SessionHub {
     const [sink, p] = [...s.standby].reduce((a, b) => (b[1].startedAt > a[1].startedAt ? b : a))
     s.standby.delete(sink)
     this.#newEpoch(s)
+    s.epochHolders.add(p.startedAt)
     s.holderStartedAt = p.startedAt
     s.label = p.label
     s.channel = p.channel
@@ -785,7 +818,7 @@ export class SessionHub {
     if (!(s.channel && s.proxy) && s.monitors.size === 0) return
     const { events, dropped, expired } = this.#take(s)
     if (dropped > 0) this.#log(`session ${s.id}: ${dropped} watched messages were dropped while nobody was listening (queue full)`)
-    if (expired > 0) this.#log(`session ${s.id}: ${expired} watched messages expired while nobody was listening (older than the age limit, or unreadable in desks.json)`)
+    if (expired > 0) this.#log(`session ${s.id}: ${expired} watched messages expired while nobody was listening (older than the age limit)`)
     for (const e of events) this.#deliver(s, e)
   }
 

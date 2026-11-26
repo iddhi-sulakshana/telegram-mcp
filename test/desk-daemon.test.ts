@@ -477,6 +477,36 @@ describe('desk sessions through the daemon', () => {
     expect((await after.client.call('telegram_status', {})).result.text).toContain('Desk: desk')
   })
 
+  test('a catch-up while config.json is invalid waits for a valid one, then runs', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'tgmcp-desk-badcatch-'))
+    const a = await start(CONFIG, home)
+    const before = await connect(a.daemon, { sessionId: 's_deskone1', desk: 'desk' })
+    await before.client.call('telegram_watch', { chat: 'leo' })
+    a.tg.emit(LEO.id, 'handled', LEO.id, { id: 8201 })
+    await settle()
+    before.client.close()
+    await a.daemon.stop()
+
+    const paths = getPaths(home)
+    writeFileSync(paths.config, '{ "desks": ')
+    const tg = new FakeTelegram().add(LEO, ANNA)
+    tg.history.set(LEO.id, [
+      { id: 8202, chatId: LEO.id, date: new Date().toISOString(), from: LEO, outgoing: false, text: 'missed during the outage', media: null, replyToId: null, topicId: null },
+    ])
+    const b = await createDaemon({ paths, port: 0, telegram: tg, log: () => {}, pageBotToken: null })
+    cleanup.push(() => b.stop())
+    expect(b.hub.attachProxy('d_desk', { label: 'x', channel: false, watches: [], desk: 'desk', startedAt: Date.now() }, { send: () => 1 })).toBe(true)
+    expect(await b.service.catchUpDesk('d_desk', 20)).toBe(0)
+    b.service.catchUpWaiting()
+    await settle()
+    expect(b.hub.pending('d_desk')).toBe(0)
+    writeFileSync(paths.config, JSON.stringify(CONFIG))
+    b.store.reload()
+    b.service.catchUpWaiting()
+    await settle()
+    expect(b.hub.drain('d_desk').events.map(e => e.text)).toEqual(['missed during the outage'])
+  })
+
   test('a catch-up that found Telegram not connected runs once it is, without another hello', async () => {
     const home = mkdtempSync(join(tmpdir(), 'tgmcp-desk-late-'))
     const a = await start(CONFIG, home)

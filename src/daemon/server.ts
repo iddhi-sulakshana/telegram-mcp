@@ -292,9 +292,11 @@ export function startServer(o: ServerOptions) {
           const current = o.hub.attachProxy(sid, { label, channel: msg.channel === true, watches, desk, startedAt }, ws)
           send(ws, { t: 'welcome', telegram: o.tg.state() })
           if (!current) {
-            // A newer proxy holds this desk. The connection stays (closing it would only make the proxy
-            // reconnect in a loop); every call on it is refused with an error that says why.
-            o.log(`session ${sid} (${label}) turned away: a newer proxy holds desk ${desk}`)
+            // A newer proxy holds this desk, or it is kept for one. The connection stays (closing it would
+            // only make the proxy reconnect in a loop); every call on it is refused with an error that says
+            // why, and it gets the desk if that proxy doesn't come back.
+            const holds = o.hub.heldDesks().includes(sid)
+            o.log(`session ${sid} (${label}) turned away: ${holds ? 'a newer proxy holds' : 'it is kept for a newer proxy of'} desk ${desk}`)
             return
           }
           o.log(`session ${sid} connected (${label}${msg.channel === true ? ', channel' : ''}${desk ? `, desk ${desk}` : ''})`)
@@ -314,7 +316,9 @@ export function startServer(o: ServerOptions) {
               t: 'result',
               id: msg.id,
               ok: false,
-              error: `Another Claude session now holds desk "${desk}" (it started later with --desk ${desk}). This session no longer acts for that desk: nothing was done. Only one session should hold a desk; close this one or start it without --desk.`,
+              error: o.hub.heldDesks().includes(sid)
+                ? `Another Claude session now holds desk "${desk}" (it started later with --desk ${desk}). This session no longer acts for that desk: nothing was done. Only one session should hold a desk; close this one or start it without --desk.`
+                : `Desk "${desk}" is kept for a session that started later with --desk ${desk} and is reconnecting. This session doesn't act for it now: nothing was done. If that session doesn't come back within about half a minute, this one gets the desk; call telegram_status then for its Monitor URL.`,
             })
             return
           }

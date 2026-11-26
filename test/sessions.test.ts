@@ -309,6 +309,56 @@ describe('SessionHub', () => {
       expect(hub.isCurrentProxy('d_desk', older)).toBe(false)
     })
 
+    test('a second Claude session that held the desk under the same Monitor URL comes back: the URL changes, its Monitors close', () => {
+      const hub = new SessionHub({ deskFor })
+      const closed: string[] = []
+      const x = sink()
+      hub.attachProxy('d_desk', { label: 'x', channel: false, watches: [], desk: 'desk', startedAt: 100 }, x)
+      hub.attachMonitor('d_desk', { send: () => 1, close: () => closed.push('x') } as never)
+      const epoch = hub.eventsEpoch('d_desk')
+      // X's proxy dies; Y starts with the desk while none holds it, and keeps the URL.
+      hub.detachProxy('d_desk', x)
+      const y = sink()
+      expect(hub.attachProxy('d_desk', { label: 'y', channel: false, watches: [], desk: 'desk', startedAt: 200 }, y)).toBe(true)
+      expect(hub.eventsEpoch('d_desk')).toBe(epoch)
+      // X's proxy comes back: turned away, and the URL both had stops working.
+      expect(hub.attachProxy('d_desk', { label: 'x', channel: false, watches: [], desk: 'desk', startedAt: 100 }, x)).toBe(false)
+      expect(hub.eventsEpoch('d_desk')).not.toBe(epoch)
+      expect(closed).toEqual(['x'])
+      expect(hub.isCurrentProxy('d_desk', y)).toBe(true)
+      // Saying hello again doesn't change it a second time.
+      const now = hub.eventsEpoch('d_desk')
+      hub.attachProxy('d_desk', { label: 'x', channel: false, watches: [], desk: 'desk', startedAt: 100 }, x)
+      expect(hub.eventsEpoch('d_desk')).toBe(now)
+    })
+
+    test('past the hold, a waiting newer proxy gets the desk before an older one that says hello; an older one gets a new URL', () => {
+      let now = 1_000
+      const hub = new SessionHub({ deskFor, now: () => now })
+      const holder = sink()
+      hub.attachProxy('d_desk', { label: 'h', channel: false, watches: [], desk: 'desk', startedAt: 300 }, holder)
+      const waiting = sink()
+      expect(hub.attachProxy('d_desk', { label: 'w', channel: false, watches: [], desk: 'desk', startedAt: 200 }, waiting)).toBe(false)
+      const epoch = hub.eventsEpoch('d_desk')
+      hub.detachProxy('d_desk', holder)
+      now += 31_000
+      // No sweep yet: the hello of an even older proxy hands the desk to the waiting one first.
+      const oldest = sink()
+      expect(hub.attachProxy('d_desk', { label: 'o', channel: false, watches: [], desk: 'desk', startedAt: 100 }, oldest)).toBe(false)
+      expect(hub.isCurrentProxy('d_desk', waiting)).toBe(true)
+      expect(hub.eventsEpoch('d_desk')).not.toBe(epoch)
+
+      // An older proxy taking a free desk past the hold, with nobody waiting, gets a new URL too.
+      const hub2 = new SessionHub({ deskFor, now: () => now })
+      const h2 = sink()
+      hub2.attachProxy('d_desk', { label: 'h', channel: false, watches: [], desk: 'desk', startedAt: 300 }, h2)
+      const e2 = hub2.eventsEpoch('d_desk')
+      hub2.detachProxy('d_desk', h2)
+      now += 31_000
+      expect(hub2.attachProxy('d_desk', { label: 'o', channel: false, watches: [], desk: 'desk', startedAt: 100 }, sink())).toBe(true)
+      expect(hub2.eventsEpoch('d_desk')).not.toBe(e2)
+    })
+
     test("a waiting proxy that disconnects is out of line: it isn't given the desk later", () => {
       let now = 1_000
       const hub = new SessionHub({ deskFor, now: () => now })
@@ -459,6 +509,21 @@ describe('SessionHub', () => {
         // The gone holder's Monitor URL stops working; the new holder gets the desk's watches.
         expect(second.eventsEpoch('d_desk')).not.toBe(epoch)
         expect(older.got.map(g => JSON.parse(g)).some(m => m.t === 'watches' && m.watches.length === 1)).toBe(true)
+      })
+
+      test('across a daemon restart, a second Claude session that held the desk under the same URL still changes it when it comes back', () => {
+        const file = path()
+        const first = new SessionHub({ deskFor, desks: new DeskStore(file) })
+        const x = sink()
+        first.attachProxy('d_desk', { label: 'x', channel: false, watches: [], desk: 'desk', startedAt: 100 }, x)
+        first.detachProxy('d_desk', x)
+        first.attachProxy('d_desk', { label: 'y', channel: false, watches: [], desk: 'desk', startedAt: 200 }, sink())
+        const epoch = first.eventsEpoch('d_desk')
+        const second = new SessionHub({ deskFor, desks: new DeskStore(file) })
+        expect(second.attachProxy('d_desk', { label: 'y', channel: false, watches: [], desk: 'desk', startedAt: 200 }, sink())).toBe(true)
+        expect(second.eventsEpoch('d_desk')).toBe(epoch)
+        expect(second.attachProxy('d_desk', { label: 'x', channel: false, watches: [], desk: 'desk', startedAt: 100 }, sink())).toBe(false)
+        expect(second.eventsEpoch('d_desk')).not.toBe(epoch)
       })
 
       test('a Claude restart while the daemon was down too: the new proxy keeps the saved Monitor URL', () => {

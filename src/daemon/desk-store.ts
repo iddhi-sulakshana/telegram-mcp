@@ -6,6 +6,9 @@ import type { TgEvent, WatchSpec } from '../shared/protocol'
 import { oneLine } from '../shared/text'
 
 /** A queued message older than this is dropped when desks.json loads: a desk that never came back doesn't keep text for ever. */
+/** How many proxy start times desks.json keeps per desk for its current Monitor URL. */
+export const EPOCH_HOLDERS_MAX = 20
+
 export const DESK_QUEUE_MAX_AGE_DAYS = 7
 export const DESK_QUEUE_MAX_AGE_MS = DESK_QUEUE_MAX_AGE_DAYS * 24 * 60 * 60_000
 
@@ -14,14 +17,16 @@ export interface DeskState {
   label: string
   /** When the proxy holding the desk started (ms): of two, the newer holds it. */
   holder: number
-  /** Bumped on every change of holder; the desk's Monitor key is made from it. */
+  /** Changes when another Claude session gets the desk; the desk's Monitor key is made from it. */
   epoch: number
+  /** Start times of the proxies that held the desk under this epoch, newest last (at most EPOCH_HOLDERS_MAX). */
+  epochHolders: number[]
   watches: WatchSpec[]
   /** Watched messages no listener has taken yet, oldest first. */
   queue: TgEvent[]
   /** How many were dropped because the queue was full, not yet reported. */
   dropped: number
-  /** How many went because they passed the age limit (or could not be read back), not yet reported. */
+  /** How many went because they passed the age limit, not yet reported. */
   expired: number
   /** The newest message id handed to the desk, per chat id: older or equal ones are not handed again. */
   seen: Record<string, number>
@@ -61,6 +66,10 @@ const DeskSchema = z.object({
   label: z.string().default(''),
   holder: z.number().default(0),
   epoch: z.number().int().nonnegative().default(0),
+  epochHolders: z
+    .array(z.number())
+    .default([])
+    .transform(a => a.slice(-EPOCH_HOLDERS_MAX)),
   watches: z.array(z.unknown()).default([]),
   queue: z.array(z.unknown()).default([]),
   dropped: z.number().int().nonnegative().default(0),
