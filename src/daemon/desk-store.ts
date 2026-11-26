@@ -42,21 +42,47 @@ const EventSchema = z.looseObject({
   media: nullable(z.string()),
   date: z.string(),
 })
-const FileSchema = z.object({
-  version: z.literal(1),
-  desks: z.record(
-    z.string(),
-    z.object({
-      label: z.string().default(''),
-      holder: z.number().default(0),
-      epoch: z.number().int().nonnegative().default(0),
-      watches: z.array(z.looseObject({ id: z.string(), chatId: z.number().int(), chatLabel: z.string(), createdAt: z.number() })).default([]),
-      queue: z.array(EventSchema).default([]),
-      dropped: z.number().int().nonnegative().default(0),
-      seen: z.record(z.string(), z.number().int()).default({}),
-    }),
-  ),
+const WatchSchema = z.looseObject({
+  id: z.string().min(1).max(64),
+  chatId: z.number().int(),
+  chatLabel: z.string(),
+  createdAt: z.number(),
+  fromId: z.number().int().optional(),
+  fromLabel: z.string().optional(),
+  topicId: z.number().int().optional(),
+  note: z.string().optional(),
 })
+// Each entry is checked on its own, so one bad watch, message or desk costs only itself.
+const FileSchema = z.object({ version: z.literal(1), desks: z.record(z.string(), z.unknown()) })
+const DeskSchema = z.object({
+  label: z.string().default(''),
+  holder: z.number().default(0),
+  epoch: z.number().int().nonnegative().default(0),
+  watches: z.array(z.unknown()).default([]),
+  queue: z.array(z.unknown()).default([]),
+  dropped: z.number().int().nonnegative().default(0),
+  seen: z.record(z.string(), z.number().int()).default({}),
+})
+
+/**
+ * Watches as a proxy or desks.json gave them, keeping only well-formed ones, each label on one line.
+ * They are saved to desks.json and shown on header lines, so nothing else gets through.
+ */
+export function cleanWatches(list: readonly unknown[]): WatchSpec[] {
+  return list.flatMap(item => {
+    const r = WatchSchema.safeParse(item)
+    if (!r.success) return []
+    const w = r.data
+    return [
+      {
+        ...w,
+        chatLabel: oneLine(w.chatLabel),
+        ...(w.fromLabel !== undefined ? { fromLabel: oneLine(w.fromLabel) } : {}),
+        ...(w.note !== undefined ? { note: oneLine(w.note) } : {}),
+      } as WatchSpec,
+    ]
+  })
+}
 
 /**
  * desks.json in the daemon's folder: each desk's watches, undelivered messages and last-seen ids.
@@ -72,32 +98,49 @@ export class DeskStore {
   load(): Map<string, DeskState> {
     const out = new Map<string, DeskState>()
     if (!existsSync(this.path)) return out
+    let raw: unknown
     try {
-      const file = FileSchema.parse(JSON.parse(readFileSync(this.path, 'utf8')))
-      for (const [name, d] of Object.entries(file.desks)) {
-        if (deskName(name) === null) continue
-        // Notices (/reply, moderator) are never kept; drop any an older version wrote. Old messages go too.
-        const cutoff = this.now() - DESK_QUEUE_MAX_AGE_MS
-        const all = (d.queue as unknown as TgEvent[]).filter(e => !e.takeover && !e.moderation)
-        const queue = all.filter(e => !(Date.parse(e.date) < cutoff))
-        // The file is the daemon's own, but labels end up on header lines: keep each on one line.
-        const watches = (d.watches as WatchSpec[]).map(w => ({
-          ...w,
-          chatLabel: oneLine(w.chatLabel),
-          ...(w.fromLabel !== undefined ? { fromLabel: oneLine(String(w.fromLabel)) } : {}),
-          ...(w.note !== undefined ? { note: oneLine(String(w.note)) } : {}),
-        }))
-        out.set(name, { ...d, label: oneLine(d.label), watches, queue, dropped: d.dropped + (all.length - queue.length) })
+      raw = JSON.parse(readFileSync(this.path, 'utf8'))
+    } catch {
+      return this.#setAside('is not valid JSON')
+    }
+    const file = FileSchema.safeParse(raw)
+    if (!file.success) return this.#setAside('has an unexpected layout')
+    const cutoff = this.now() - DESK_QUEUE_MAX_AGE_MS
+    for (const [name, entry] of Object.entries(file.data.desks)) {
+      if (deskName(name) === null) continue
+      const d = DeskSchema.safeParse(entry)
+      if (!d.success) {
+        // Only the name in the log: the entry may hold message text.
+        this.log(`desks.json: desk "${name}" could not be read; it starts with no saved state`)
+        continue
       }
-    } catch (e) {
-      // Set aside, not deleted: it may hold messages someone wants to read.
-      const aside = `${this.path}.bad`
-      try {
-        renameSync(this.path, aside)
-      } catch {}
-      this.log(`desks.json could not be read (${e instanceof Error ? e.message : String(e)}); moved to ${aside}, starting with no desk state`)
+      // Notices (/reply, moderator) are never kept; drop any an older version wrote. Old messages go too.
+      const all = d.data.queue.flatMap(e => {
+        const r = EventSchema.safeParse(e)
+        return r.success && !r.data.takeover && !r.data.moderation ? [r.data as unknown as TgEvent] : []
+      })
+      const queue = all.filter(e => !(Date.parse(e.date) < cutoff))
+      out.set(name, {
+        ...d.data,
+        // The file is the daemon's own, but labels end up on header lines: keep each on one line.
+        label: oneLine(d.data.label),
+        watches: cleanWatches(d.data.watches),
+        queue,
+        dropped: d.data.dropped + (d.data.queue.length - queue.length),
+      })
     }
     return out
+  }
+
+  /** Moves a file that can't be read to desks.json.bad (kept for the person to look at) and starts empty. The log quotes none of it. */
+  #setAside(why: string): Map<string, DeskState> {
+    const aside = `${this.path}.bad`
+    try {
+      renameSync(this.path, aside)
+    } catch {}
+    this.log(`desks.json ${why}; moved to ${aside}, starting with no desk state`)
+    return new Map()
   }
 
   /** Returns whether the file was written. */

@@ -393,6 +393,38 @@ describe('desk sessions through the daemon', () => {
     expect(b.hub.drain('d_desk').events.map(e => e.text)).toEqual(['missed'])
   })
 
+  test("a hello with odd fields can't spoil desks.json: the label is made one line, bad watches are dropped", async () => {
+    const home = mkdtempSync(join(tmpdir(), 'tgmcp-desk-hello-'))
+    const { daemon } = await start(CONFIG, home)
+    const ws = new WebSocket(`ws://127.0.0.1:${daemon.port}/bridge`, { headers: { authorization: `Bearer ${daemon.token}` } } as never)
+    await new Promise(resolve => (ws.onopen = resolve))
+    const welcome = new Promise(resolve => (ws.onmessage = resolve))
+    ws.send(
+      JSON.stringify({
+        t: 'hello',
+        sessionId: 's_oddhello',
+        desk: 'desk',
+        label: 'two\nlines',
+        channel: 'yes',
+        watches: [{ id: 'w_ok', chatId: LEO.id, chatLabel: 'Leo', createdAt: 0 }, { id: 5 }, 'nope'],
+      }),
+    )
+    await welcome
+    const s = daemon.hub.snapshot().find(x => x.id === 'd_desk')!
+    expect(s.label).toBe('two lines')
+    expect(s.channel).toBe(false)
+    expect(s.watches.map(w => w.id)).toEqual(['w_ok'])
+    ws.close()
+    daemon.hub.flush()
+    // The file it wrote loads cleanly.
+    const logs: string[] = []
+    const { SessionHub } = await import('../src/daemon/sessions')
+    const { DeskStore } = await import('../src/daemon/desk-store')
+    const again = new SessionHub({ desks: new DeskStore(join(home, 'desks.json'), m => logs.push(m)) })
+    expect(again.watches('d_desk').map(w => w.id)).toEqual(['w_ok'])
+    expect(logs).toEqual([])
+  })
+
   test('a desk name that is not valid is ignored: the proxy is an ordinary session', async () => {
     const { daemon } = await start()
     const odd = await connect(daemon, { sessionId: 's_oddname1', desk: 'Not A Desk' })

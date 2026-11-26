@@ -476,6 +476,38 @@ describe('SessionHub', () => {
         expect(dropped).toBe(2)
       })
 
+      test('one bad entry in desks.json costs only that entry, never the whole file', () => {
+        const file = path()
+        const good = { label: 'ok', holder: 1, epoch: 1, watches: [{ id: 'w_1', chatId: -5, chatLabel: 'g', createdAt: 0 }], queue: [], dropped: 0, seen: { '-5': 10 } }
+        const ev = { seq: 1, watchIds: ['w_1'], chatId: -5, chatLabel: 'g', fromId: 7, fromName: 'x', fromUsername: null, messageId: 11, topicId: null, replyToId: null, text: 'kept', media: null, date: new Date().toISOString() }
+        writeFileSync(
+          file,
+          JSON.stringify({
+            version: 1,
+            desks: {
+              desk: { ...good, watches: [...good.watches, { id: 'w_2', chatId: 'not a number' }], queue: [ev, { seq: 'x' }] },
+              broken: { label: 42, watches: 'nope' },
+            },
+          }),
+        )
+        const logs: string[] = []
+        const hub = new SessionHub({ deskFor, desks: new DeskStore(file, m => logs.push(m)), deskConfigured: () => true })
+        expect(existsSync(`${file}.bad`)).toBe(false)
+        expect(hub.watches('d_desk').map(w => w.id)).toEqual(['w_1'])
+        expect(hub.drain('d_desk').events.map(e => e.text)).toEqual(['kept'])
+        expect(hub.has('d_broken')).toBe(false)
+        expect(logs.some(l => l.includes('broken'))).toBe(true)
+      })
+
+      test('a desks.json that is not JSON is set aside, and the log quotes none of it', () => {
+        const file = path()
+        writeFileSync(file, '{ "text": "private words here')
+        const logs: string[] = []
+        new SessionHub({ deskFor, desks: new DeskStore(file, m => logs.push(m)) })
+        expect(existsSync(`${file}.bad`)).toBe(true)
+        expect(logs.join('\n')).not.toContain('private')
+      })
+
       test('a failed write leaves no temp file behind', () => {
         const file = path()
         // A folder where desks.json should be: the rename onto it fails.
