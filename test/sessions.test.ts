@@ -201,6 +201,40 @@ describe('SessionHub', () => {
       expect(hub.snapshot().find(s => s.id === 'd_desk')?.connected).toBe(true)
     })
 
+    test("the newest-started proxy holds the desk; it closes the older one's Monitors, and an older one can't take it back", () => {
+      const hub = new SessionHub({ deskFor })
+      const closed: string[] = []
+      const monitor = (name: string) => ({ got: [] as string[], send(d: string) { this.got.push(d) }, close: () => closed.push(name) })
+      const older = sink()
+      hub.attachProxy('d_desk', { label: 'old', channel: false, watches: [], desk: 'desk', startedAt: 100 }, older)
+      hub.addWatch('d_desk', { chatId: -5, chatLabel: 'g' })
+      const oldMonitor = monitor('old')
+      hub.attachMonitor('d_desk', oldMonitor)
+      const oldEpoch = hub.eventsEpoch('d_desk')
+
+      const newer = sink()
+      expect(hub.attachProxy('d_desk', { label: 'new', channel: false, watches: [], desk: 'desk', startedAt: 200 }, newer)).toBe(true)
+      expect(closed).toEqual(['old'])
+      expect(hub.monitorCount('d_desk')).toBe(0)
+      // The Monitor URL changes with the holder, so the old session's copy no longer opens the stream.
+      expect(hub.eventsEpoch('d_desk')).not.toBe(oldEpoch)
+
+      // The older proxy reconnects (say, after a daemon blip): it does not get the desk back.
+      expect(hub.attachProxy('d_desk', { label: 'old', channel: false, watches: [], desk: 'desk', startedAt: 100 }, older)).toBe(false)
+      expect(hub.isCurrentProxy('d_desk', older)).toBe(false)
+      expect(hub.isCurrentProxy('d_desk', newer)).toBe(true)
+      const newMonitor = monitor('new')
+      hub.attachMonitor('d_desk', newMonitor)
+      hub.dispatch(msg(-5, 7, 'to the newer one'), describeMsg)
+      expect(newMonitor.got).toHaveLength(1)
+      expect(oldMonitor.got).toHaveLength(0)
+
+      // Once the newer one is gone, an older one may hold the desk again.
+      hub.detachProxy('d_desk', newer)
+      expect(hub.attachProxy('d_desk', { label: 'old', channel: false, watches: [], desk: 'desk', startedAt: 100 }, older)).toBe(true)
+      expect(closed).toEqual(['old', 'new'])
+    })
+
     test('an ordinary session is always its own current proxy', () => {
       const hub = new SessionHub({ deskFor })
       const p = sink()

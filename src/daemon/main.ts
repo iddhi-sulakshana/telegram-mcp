@@ -103,7 +103,7 @@ export async function createDaemon(o: DaemonOptions) {
     hub,
     approvals,
     // A key that opens this one session's stream and nothing else: the URL ends up in Claude transcripts.
-    eventsUrl: sid => `ws://127.0.0.1:${port}/events?session=${sid}&key=${eventsKey(token, sid)}`,
+    eventsUrl: sid => `ws://127.0.0.1:${port}/events?session=${sid}&key=${eventsKey(token, sid, hub.eventsEpoch(sid))}`,
     recentPath: join(o.paths.home, 'recent.json'),
     downloadsDir: o.paths.downloads,
     mcpHome: o.paths.home,

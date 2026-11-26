@@ -49,8 +49,9 @@ function sameToken(given: string | null, token: string): boolean {
  * The key in a Monitor URL. It opens that one session's event stream and nothing else, so the
  * URL (which the model sees, and Claude Code keeps in its transcripts) never carries the token.
  */
-export function eventsKey(token: string, sessionId: string): string {
-  return createHmac('sha256', token).update(`events:${sessionId}`).digest('hex').slice(0, 32)
+export function eventsKey(token: string, sessionId: string, epoch = ''): string {
+  // A desk's key also names its holder (SessionHub#eventsEpoch); an ordinary session's is unchanged.
+  return createHmac('sha256', token).update(epoch ? `events:${sessionId}:${epoch}` : `events:${sessionId}`).digest('hex').slice(0, 32)
 }
 
 /**
@@ -98,7 +99,7 @@ export function startServer(o: ServerOptions) {
         if (!sid || !/^(s_[a-z0-9]{8}|d_[a-z0-9][a-z0-9_-]{0,31})$/.test(sid)) {
           return new Response(authed ? 'bad session id\n' : 'unauthorized\n', { status: authed ? 400 : 401 })
         }
-        if (!authed && !sameToken(url.searchParams.get('key'), eventsKey(o.token, sid))) {
+        if (!authed && !sameToken(url.searchParams.get('key'), eventsKey(o.token, sid, o.hub.eventsEpoch(sid)))) {
           return new Response('unauthorized\n', { status: 401 })
         }
         return server.upgrade(req, { data: { kind: 'events', sessionId: sid } })
@@ -270,7 +271,8 @@ export function startServer(o: ServerOptions) {
           const desk = deskName(msg.desk)
           const sid = desk ? deskSessionId(desk) : msg.sessionId
           ws.data.sessionId = sid
-          o.hub.attachProxy(sid, { label: msg.label, channel: msg.channel, watches: msg.watches ?? [], desk }, ws)
+          const startedAt = typeof msg.startedAt === 'number' && Number.isFinite(msg.startedAt) ? msg.startedAt : 0
+          o.hub.attachProxy(sid, { label: msg.label, channel: msg.channel, watches: msg.watches ?? [], desk, startedAt }, ws)
           send(ws, { t: 'welcome', telegram: o.tg.state() })
           o.log(`session ${sid} connected (${msg.label}${msg.channel ? ', channel' : ''}${desk ? `, desk ${desk}` : ''})`)
           // A desk that comes back gets what its chats said while nothing could hand it over.

@@ -22,6 +22,8 @@ interface Session {
   disconnectedAt: number | null
   /** The desk this session holds (its id is then deskSessionId(desk)), or null for an ordinary session. */
   desk: string | null
+  /** For a desk: when its holding proxy started (ms), so the newest-started proxy holds it; 0 if unknown. */
+  holderStartedAt: number
   /** A desk's newest message id the daemon saw per chat, heard or not (kept in desks.json). */
   seen: Map<number, number>
   /** `seen` as desks.json had it when the daemon started: nothing up to it is handed over again. */
@@ -92,6 +94,7 @@ export class SessionHub {
     for (const [desk, d] of this.#desks?.load() ?? []) {
       const s = this.#ensure(deskSessionId(desk), d.label || deskSessionId(desk))
       s.desk = desk
+      s.holderStartedAt = d.holder
       for (const w of d.watches) s.watches.set(w.id, w)
       s.queue = d.queue
       s.dropped = d.dropped
@@ -112,6 +115,7 @@ export class SessionHub {
       if (s.desk === null) continue
       out.set(s.desk, {
         label: s.label,
+        holder: s.holderStartedAt,
         watches: [...s.watches.values()],
         queue: s.queue,
         dropped: s.dropped,
@@ -188,6 +192,7 @@ export class SessionHub {
         dropped: 0,
         disconnectedAt: this.#now(),
         desk: null,
+        holderStartedAt: 0,
         seen: new Map(),
         floor: new Map(),
         observed: new Map(),
@@ -203,17 +208,37 @@ export class SessionHub {
 
   /**
    * A proxy said hello. If the daemon restarted it no longer knows this session, so the proxy's copy of its watches is restored.
-   * For a desk (id deskSessionId(desk)) the newest proxy becomes the desk's proxy and gets the desk's watches.
+   * For a desk (id deskSessionId(desk)) the newest-started proxy holds it and gets the desk's watches.
+   * An older proxy, while a newer one is connected, is turned away: returns false, and its calls are
+   * refused (isCurrentProxy). Returns true when this proxy now acts for the session.
    */
-  attachProxy(id: string, info: { label: string; channel: boolean; watches: WatchSpec[]; desk?: string | null }, sink: Sink): void {
+  attachProxy(
+    id: string,
+    info: { label: string; channel: boolean; watches: WatchSpec[]; desk?: string | null; startedAt?: number },
+    sink: Sink,
+  ): boolean {
     const known = this.#sessions.has(id)
     const s = this.#ensure(id, info.label)
+    if (info.desk) s.desk = info.desk
     const replaced = s.proxy !== null && s.proxy !== sink
+    if (s.desk !== null) {
+      const started = info.startedAt ?? 0
+      if (replaced && started < s.holderStartedAt) {
+        this.#log(`desk ${s.desk}: an older proxy (${info.label}) was turned away; a newer one holds it`)
+        return false
+      }
+      if (started !== s.holderStartedAt) {
+        // A new holder: the Monitors so far are the old holder's, and its Monitor URL stops working (eventsEpoch).
+        for (const m of s.monitors) (m as { close?: () => void }).close?.()
+        s.monitors.clear()
+        s.holderStartedAt = started
+        this.#touch(s)
+      }
+    }
     s.label = info.label
     s.channel = info.channel
     s.proxy = sink
     s.disconnectedAt = null
-    if (info.desk) s.desk = info.desk
     if (!known || s.watches.size === 0) {
       for (const w of info.watches) s.watches.set(w.id, w)
     }
@@ -223,6 +248,16 @@ export class SessionHub {
     }
     this.#flush(s)
     this.#save()
+    return true
+  }
+
+  /**
+   * What a session's Monitor key is made from besides its id: for a desk, its holder, so a session
+   * that lost the desk can't keep its stream open with the URL it had. Empty for an ordinary session.
+   */
+  eventsEpoch(id: string): string {
+    const s = this.#sessions.get(id)
+    return s && s.desk !== null ? String(s.holderStartedAt) : ''
   }
 
   /**

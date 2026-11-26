@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createDaemon } from '../src/daemon/main'
+import { eventsKey } from '../src/daemon/server'
 import { DaemonClient } from '../src/mcp/daemon-client'
 import { getPaths } from '../src/shared/paths'
 import type { TgEvent } from '../src/shared/protocol'
@@ -84,6 +85,19 @@ describe('desk sessions through the daemon', () => {
     await settle()
     expect(first.events).toHaveLength(0)
     expect(second.events.map(e => e.text)).toEqual(['after the move'])
+  })
+
+  test("a desk's Monitor key changes with its holder: the old session's Monitor URL is refused", async () => {
+    const { daemon } = await start()
+    const events = (key: string) => fetch(`http://127.0.0.1:${daemon.port}/events?session=d_desk&key=${key}`)
+    await connect(daemon, { sessionId: 's_deskone1', desk: 'desk' })
+    const oldKey = eventsKey(daemon.token, 'd_desk', daemon.hub.eventsEpoch('d_desk'))
+    // The right key gets as far as the upgrade (400: a plain fetch is not a WebSocket).
+    expect((await events(oldKey)).status).toBe(400)
+    await Bun.sleep(5)
+    await connect(daemon, { sessionId: 's_desktwo2', desk: 'desk' })
+    expect((await events(oldKey)).status).toBe(401)
+    expect((await events(eventsKey(daemon.token, 'd_desk', daemon.hub.eventsEpoch('d_desk')))).status).toBe(400)
   })
 
   test("other sessions can't send, edit, delete, make topics or watch in a desk's chat; the desk can", async () => {

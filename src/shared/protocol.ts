@@ -334,8 +334,11 @@ export interface ToolResult {
 // ---- bridge protocol: per-session MCP proxy <-> daemon, JSON over one WebSocket ----
 
 export type ClientMessage =
-  /** `desk`: the proxy was started with --desk; it then speaks as that desk's session (shared/desks.ts). */
-  | { t: 'hello'; sessionId: string; label: string; channel: boolean; watches: WatchSpec[]; desk?: string }
+  /**
+   * `desk`: the proxy was started with --desk; it then speaks as that desk's session (shared/desks.ts).
+   * `startedAt`: when the proxy started (ms); of two proxies for one desk, the newer holds it.
+   */
+  | { t: 'hello'; sessionId: string; label: string; channel: boolean; watches: WatchSpec[]; desk?: string; startedAt?: number }
   | { t: 'call'; id: number; method: string; params: unknown }
 
 export type ServerMessage =
