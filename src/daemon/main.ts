@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { firstName } from '../shared/away'
-import { ConfigStore, isListed } from '../shared/config'
+import { ConfigStore, deskOf, isListed } from '../shared/config'
 import { ensureHome, makeLogger } from '../shared/files'
 import { getPaths, getPort, type Paths } from '../shared/paths'
 import { ensureToken, loadCredentials, openSecretStore, type SecretStore } from '../shared/secrets'
@@ -49,7 +49,7 @@ export async function createDaemon(o: DaemonOptions) {
       loadCredentials: () => loadCredentials(secrets),
       log,
     })
-  const hub = new SessionHub({ log, ...o.hub })
+  const hub = new SessionHub({ log, deskFor: chat => deskOf(store.get(), chat), ...o.hub })
   const approvals = new Approvals()
 
   // Pages ring the menu bar / tray (they read them from /ui/state) and, with a pager bot, the phone.

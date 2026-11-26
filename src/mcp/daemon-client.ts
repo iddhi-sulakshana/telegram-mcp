@@ -12,6 +12,8 @@ export interface DaemonClientOptions {
   sessionId: string
   label: string
   channel: boolean
+  /** Speak as this desk's session (tgmcp mcp --desk). */
+  desk?: string
   log: (msg: string) => void
   /** Called once if the daemon can't be reached at first, e.g. to ask launchd to start it. */
   onUnreachable?: () => void
@@ -95,6 +97,7 @@ export class DaemonClient {
         label: this.o.label,
         channel: this.o.channel,
         watches: this.#watches,
+        ...(this.o.desk ? { desk: this.o.desk } : {}),
       }
       ws.send(JSON.stringify(hello))
       this.#open = true

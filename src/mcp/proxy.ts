@@ -83,7 +83,7 @@ export function channelPayload(e: TgEvent) {
   return { content: quoted(messageBody(e.text, e.media, '[empty message]')), meta }
 }
 
-export async function runProxy(opts: { channel: boolean }): Promise<void> {
+export async function runProxy(opts: { channel: boolean; desk?: string | null }): Promise<void> {
   const paths = getPaths()
   const port = getPort()
   const log = (msg: string) => process.stderr.write(`[telegram-mcp] ${msg}\n`)
@@ -98,6 +98,7 @@ export async function runProxy(opts: { channel: boolean }): Promise<void> {
     sessionId,
     label: `${basename(process.cwd())} · pid ${process.ppid}`,
     channel: opts.channel,
+    ...(opts.desk ? { desk: opts.desk } : {}),
     log,
     onUnreachable: () => {
       // If the launchd job exists but isn't running, nudge it. Harmless when it isn't installed.
@@ -215,5 +216,5 @@ export async function runProxy(opts: { channel: boolean }): Promise<void> {
 
   await server.connect(transport)
   daemon.start()
-  log(`session ${sessionId} started (daemon port ${port}${opts.channel ? ', channel mode' : ''})`)
+  log(`session ${sessionId} started (daemon port ${port}${opts.channel ? ', channel mode' : ''}${opts.desk ? `, desk ${opts.desk}` : ''})`)
 }

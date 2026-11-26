@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, watch, writeFileSync, 
 import { basename, dirname, isAbsolute } from 'node:path'
 import { z } from 'zod'
 import { AwaySchema, DEFAULT_SCHEDULES } from './away'
+import { DESK_NAME_RE } from './desks'
 import { BIDI, CONTROL, DEFAULT_FOOTER } from './footer'
 import { fieldName } from './text'
 import { DEFAULT_MODERATORS } from './moderation'
@@ -10,8 +11,8 @@ import { DEFAULT_MODERATORS } from './moderation'
  * The rules file. Humans edit it by hand; Claude sessions can only change `chats`
  * (through the daemon), never `rules`, `footer` or `guides`. `away` (the away auto-reply schedules)
  * and `moderation` (moderator commands) are changed only by hand, by the CLI or by the tray, never by a session.
- * The same goes for `chatCreation` (whether sessions may ask to create channels and supergroups) and
- * `files` (extra folders whose files are never sent).
+ * The same goes for `chatCreation` (whether sessions may ask to create channels and supergroups),
+ * `files` (extra folders whose files are never sent) and `desks` (which session owns which chats).
  */
 
 const ChatRefSchema = z.union([z.string().min(1), z.number().int()])
@@ -117,6 +118,16 @@ const FilesSchema = z.looseObject({
 })
 export type FilesConfig = z.infer<typeof FilesSchema>
 
+/**
+ * One desk: the chats only the session holding it hears and sends to (see shared/desks.ts). A chat
+ * on no desk works as before. Only the owner sets desks, by hand; no tool changes them.
+ */
+const DeskSchema = z.looseObject({
+  /** Nicknames, @usernames or marked ids, as in the rules lists. A chat on two desks belongs to the first. */
+  chats: z.array(ChatRefSchema).default([]),
+})
+export type DeskConfig = z.infer<typeof DeskSchema>
+
 export const ConfigSchema = z.looseObject({
   guides: z.array(z.string()).default([]),
   footer: z.string().default(''),
@@ -131,6 +142,10 @@ export const ConfigSchema = z.looseObject({
   moderation: ModerationSchema.prefault({}),
   chatCreation: ChatCreationSchema.prefault({}),
   files: FilesSchema.prefault({}),
+  /** Off (empty) by default: no chat has a desk, and every session hears what it watches. */
+  desks: z
+    .record(z.string().regex(DESK_NAME_RE, 'a desk name is 1 to 32 lowercase letters, digits, - and _'), DeskSchema)
+    .default({}),
 })
 export type Config = z.infer<typeof ConfigSchema>
 export type RuleList = 'blocked' | 'requireApproval' | 'autoSend' | 'autoReply'
@@ -248,15 +263,23 @@ function byId(config: Config, id: number): Resolved {
 }
 
 /**
- * Every rules list that mentions this name as a plain string ref (nickname/alias), and "away.skip"
- * when that list does: a name there decides who never gets an away reply, so it is guarded the same way.
+ * Every rules list that mentions this name as a plain string ref (nickname/alias), "away.skip" when
+ * that list does (a name there decides who never gets an away reply), and "desks.<name>" for each desk
+ * that does (a name there decides which session owns the chat): all are guarded the same way.
  */
-export function rulesMentioning(config: Config, name: string): (RuleList | 'away.skip')[] {
+export function rulesMentioning(config: Config, name: string): (RuleList | 'away.skip' | `desks.${string}`)[] {
   const n = normalizeNickname(name)
   const named = (refs: readonly ChatRef[]) => refs.some(ref => typeof ref === 'string' && normalizeNickname(ref) === n)
-  const lists: (RuleList | 'away.skip')[] = RULE_LISTS.filter(list => named(config.rules[list]))
+  const lists: (RuleList | 'away.skip' | `desks.${string}`)[] = RULE_LISTS.filter(list => named(config.rules[list]))
   if (named(config.away.skip)) lists.push('away.skip')
+  for (const [desk, d] of Object.entries(config.desks)) if (named(d.chats)) lists.push(`desks.${desk}`)
   return lists
+}
+
+/** The desk that owns this chat, or null. Matches the marked id exactly, like the allow lists. */
+export function deskOf(config: Config, chat: ChatKey): string | null {
+  for (const [desk, d] of Object.entries(config.desks)) if (inRefs(config, d.chats, chat)) return desk
+  return null
 }
 
 /** A name no other chat, alias or rule uses yet. */

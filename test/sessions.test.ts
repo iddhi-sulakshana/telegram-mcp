@@ -111,6 +111,100 @@ describe('SessionHub', () => {
     expect(dropped).toBe(1)
   })
 
+  describe('desks', () => {
+    // Chat -5 belongs to the "desk" desk; chat -6 to none.
+    const deskFor = (chat: { id: number }) => (chat.id === -5 ? 'desk' : null)
+    const base = { chatId: -5, chatLabel: 'g', fromId: 1, fromName: 'me', fromUsername: null, messageId: 1, topicId: null, replyToId: null, text: '', media: null, date: '' }
+
+    test('a desk chat reaches only the desk session, even when others watch it', () => {
+      const hub = new SessionHub({ deskFor })
+      const other = sink()
+      const desk = sink()
+      hub.attachProxy('s1', { label: 'a', channel: false, watches: [] }, other)
+      hub.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk' }, desk)
+      hub.addWatch('s1', { chatId: -5, chatLabel: 'g' })
+      hub.addWatch('d_desk', { chatId: -5, chatLabel: 'g' })
+      expect(hub.dispatch(msg(-5, 7, 'for the desk'), describeMsg)).toBe(1)
+      expect(hub.pending('s1')).toBe(0)
+      expect(hub.pending('d_desk')).toBe(1)
+    })
+
+    test('chats outside every desk still reach every watcher', () => {
+      const hub = new SessionHub({ deskFor })
+      hub.attachProxy('s1', { label: 'a', channel: false, watches: [] }, sink())
+      hub.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk' }, sink())
+      hub.addWatch('s1', { chatId: -6, chatLabel: 'h' })
+      hub.addWatch('d_desk', { chatId: -6, chatLabel: 'h' })
+      expect(hub.dispatch(msg(-6, 7, 'everyone'), describeMsg)).toBe(2)
+    })
+
+    test('the latest proxy to speak for a desk gets its events; the older one is no longer current', () => {
+      const hub = new SessionHub({ deskFor })
+      const first = sink()
+      const second = sink()
+      hub.attachProxy('d_desk', { label: 'one', channel: true, watches: [], desk: 'desk' }, first)
+      hub.addWatch('d_desk', { chatId: -5, chatLabel: 'g' })
+      hub.attachProxy('d_desk', { label: 'two', channel: true, watches: [], desk: 'desk' }, second)
+      expect(hub.isCurrentProxy('d_desk', first)).toBe(false)
+      expect(hub.isCurrentProxy('d_desk', second)).toBe(true)
+      // The new proxy keeps the desk's watches.
+      expect(hub.isWatching('d_desk', -5)).toBe(true)
+      hub.dispatch(msg(-5, 7, 'latest'), describeMsg)
+      const events = (s: { got: string[] }) => s.got.map(g => JSON.parse(g)).filter(m => m.t === 'event')
+      expect(events(first)).toHaveLength(0)
+      expect(events(second)).toHaveLength(1)
+      // The older proxy closing doesn't take the desk offline.
+      hub.detachProxy('d_desk', first)
+      expect(hub.snapshot().find(s => s.id === 'd_desk')?.connected).toBe(true)
+    })
+
+    test('an ordinary session is always its own current proxy', () => {
+      const hub = new SessionHub({ deskFor })
+      const p = sink()
+      hub.attachProxy('s1', { label: 'a', channel: false, watches: [] }, p)
+      expect(hub.isCurrentProxy('s1', p)).toBe(true)
+    })
+
+    test('only the desk session makes a desk chat live', () => {
+      const hub = new SessionHub({ deskFor })
+      hub.attachProxy('s1', { label: 'a', channel: false, watches: [] }, sink())
+      hub.addWatch('s1', { chatId: -5, chatLabel: 'g' })
+      hub.attachMonitor('s1', sink())
+      expect(hub.handledLive(-5)).toBe(false)
+      hub.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk' }, sink())
+      hub.addWatch('d_desk', { chatId: -5, chatLabel: 'g' })
+      hub.attachMonitor('d_desk', sink())
+      expect(hub.handledLive(-5)).toBe(true)
+    })
+
+    test('/reply in a desk chat goes to the desk session, never to another handler', () => {
+      const hub = new SessionHub({ deskFor })
+      hub.attachProxy('s1', { label: 'a', channel: false, watches: [] }, sink())
+      hub.attachMonitor('s1', sink())
+      hub.setReplyHandler('s1', true)
+      // No desk session listening: nobody takes it.
+      expect(hub.startTakeover(-5, 60_000, base)).toBeNull()
+      hub.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk' }, sink())
+      hub.attachMonitor('d_desk', sink())
+      expect(hub.startTakeover(-5, 60_000, base)).toBe('d_desk')
+      // Other chats still go to the /reply handler.
+      expect(hub.startTakeover(-6, 60_000, { ...base, chatId: -6 })).toBe('s1')
+    })
+
+    test('a desk session is never swept', () => {
+      let now = 0
+      const hub = new SessionHub({ graceMs: 1000, now: () => now, deskFor })
+      const p = sink()
+      hub.attachProxy('d_desk', { label: 'b', channel: false, watches: [], desk: 'desk' }, p)
+      hub.addWatch('d_desk', { chatId: -5, chatLabel: 'g' })
+      hub.detachProxy('d_desk', p)
+      now = 10_000
+      expect(hub.sweep()).toEqual([])
+      expect(hub.isWatching('d_desk', -5)).toBe(true)
+      expect(hub.deskOf('d_desk')).toBe('desk')
+    })
+  })
+
   describe('handledLive', () => {
     const ANNA_ID = 4242
     const watch = { chatId: ANNA_ID, chatLabel: 'Anna' }

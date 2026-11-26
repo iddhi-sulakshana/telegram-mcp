@@ -1,3 +1,4 @@
+import { deskSessionId } from '../shared/desks'
 import type { IncomingMessage, ServerMessage, TgEvent, WatchSpec } from '../shared/protocol'
 import { fieldName, messageBody, quoted, senderLabel } from '../shared/text'
 
@@ -15,6 +16,8 @@ interface Session {
   queue: TgEvent[]
   dropped: number
   disconnectedAt: number | null
+  /** The desk this session holds (its id is then deskSessionId(desk)), or null for an ordinary session. */
+  desk: string | null
 }
 
 export interface HubOptions {
@@ -23,6 +26,8 @@ export interface HubOptions {
   maxQueue?: number
   now?: () => number
   log?: (msg: string) => void
+  /** The desk that owns a chat (config.json "desks"), or null. None by default. */
+  deskFor?: (chat: { id: number; username?: string | null }) => string | null
 }
 
 export function newId(prefix: string): string {
@@ -42,6 +47,7 @@ export class SessionHub {
   readonly #maxQueue: number
   readonly #now: () => number
   readonly #log: (msg: string) => void
+  readonly #deskFor: (chat: { id: number; username?: string | null }) => string | null
   #seq = 0
   /** Sessions that answer "/reply", most recently enabled last. */
   #handlers: string[] = []
@@ -53,6 +59,7 @@ export class SessionHub {
     this.#maxQueue = opts.maxQueue ?? 200
     this.#now = opts.now ?? Date.now
     this.#log = opts.log ?? (() => {})
+    this.#deskFor = opts.deskFor ?? (() => null)
   }
 
   #ensure(id: string, label = id): Session {
@@ -68,6 +75,7 @@ export class SessionHub {
         queue: [],
         dropped: 0,
         disconnectedAt: this.#now(),
+        desk: null,
       }
       this.#sessions.set(id, s)
     }
@@ -78,18 +86,46 @@ export class SessionHub {
     return this.#sessions.has(id)
   }
 
-  /** A proxy said hello. If the daemon restarted it no longer knows this session, so the proxy's copy of its watches is restored. */
-  attachProxy(id: string, info: { label: string; channel: boolean; watches: WatchSpec[] }, sink: Sink): void {
+  /**
+   * A proxy said hello. If the daemon restarted it no longer knows this session, so the proxy's copy of its watches is restored.
+   * For a desk (id deskSessionId(desk)) the newest proxy becomes the desk's proxy and gets the desk's watches.
+   */
+  attachProxy(id: string, info: { label: string; channel: boolean; watches: WatchSpec[]; desk?: string | null }, sink: Sink): void {
     const known = this.#sessions.has(id)
     const s = this.#ensure(id, info.label)
+    const replaced = s.proxy !== null && s.proxy !== sink
     s.label = info.label
     s.channel = info.channel
     s.proxy = sink
     s.disconnectedAt = null
+    if (info.desk) s.desk = info.desk
     if (!known || s.watches.size === 0) {
       for (const w of info.watches) s.watches.set(w.id, w)
     }
+    if (s.desk) {
+      if (replaced) this.#log(`desk ${s.desk}: a newer proxy (${info.label}) took it over`)
+      this.#syncWatches(s)
+    }
     this.#flush(s)
+  }
+
+  /**
+   * Whether calls on this bridge connection still act for the session. Always for an ordinary
+   * session; for a desk, only its newest proxy, so two Claude sessions never both act as one desk.
+   */
+  isCurrentProxy(id: string, sink: Sink): boolean {
+    const s = this.#sessions.get(id)
+    return !s || s.desk === null || s.proxy === sink
+  }
+
+  /** The desk this session holds, or null. */
+  deskOf(id: string): string | null {
+    return this.#sessions.get(id)?.desk ?? null
+  }
+
+  /** The desk that owns this chat (config.json "desks"), or null. */
+  chatDesk(chat: { id: number; username?: string | null }): string | null {
+    return this.#deskFor(chat)
   }
 
   detachProxy(id: string, sink: Sink): void {
@@ -122,6 +158,7 @@ export class SessionHub {
       monitors: s.monitors.size,
       pending: s.queue.length,
       watches: [...s.watches.values()],
+      ...(s.desk !== null ? { desk: s.desk } : {}),
     }))
   }
 
@@ -170,10 +207,16 @@ export class SessionHub {
     return [...this.#sessions.values()].filter(s => [...s.watches.values()].some(w => w.chatId === chatId)).map(s => s.id)
   }
 
-  /** True when a Claude session would see a message on this chat now: it is taken over, or a watching session is reachable. */
+  /**
+   * True when a Claude session would see a message on this chat now: it is taken over, or a watching
+   * session is reachable. On a desk's chat only the desk's session counts.
+   */
   handledLive(chatId: number): boolean {
     if (this.takeoverOf(chatId) !== null) return true
-    return [...this.#sessions.values()].some(s => this.#reachable(s) && [...s.watches.values()].some(w => w.chatId === chatId))
+    const desk = this.#deskFor({ id: chatId })
+    return [...this.#sessions.values()].some(
+      s => (desk === null || s.desk === desk) && this.#reachable(s) && [...s.watches.values()].some(w => w.chatId === chatId),
+    )
   }
 
   isWatching(id: string, chatId: number): boolean {
@@ -225,9 +268,19 @@ export class SessionHub {
     return null
   }
 
-  /** Hand a chat to the live handler for `ttlMs` and tell it why. Null when no session can take it. */
+  /** A desk's session, if someone is listening to it. */
+  #liveDesk(desk: string): Session | null {
+    const s = this.#sessions.get(deskSessionId(desk))
+    return s && this.#reachable(s) ? s : null
+  }
+
+  /**
+   * Hand a chat to the live handler for `ttlMs` and tell it why. Null when no session can take it.
+   * A desk's chat goes to the desk's session (it owns the chat), never to another handler.
+   */
   startTakeover(chatId: number, ttlMs: number, event: Omit<TgEvent, 'seq' | 'watchIds'>): string | null {
-    const s = this.#liveHandler()
+    const desk = this.#deskFor({ id: chatId })
+    const s = desk !== null ? this.#liveDesk(desk) : this.#liveHandler()
     if (!s) return null
     this.#takeovers.set(chatId, { sessionId: s.id, until: this.#now() + ttlMs })
     this.#deliver(s, { ...event, seq: ++this.#seq, watchIds: ['takeover'] })
@@ -286,12 +339,17 @@ export class SessionHub {
     return [...told]
   }
 
-  /** Routes one incoming Telegram message to every session with a matching watch, or that has the chat taken over. */
+  /**
+   * Routes one incoming Telegram message to every session with a matching watch, or that has the chat
+   * taken over. A desk's chat goes only to the desk's session.
+   */
   dispatch(msg: IncomingMessage, describe: (msg: IncomingMessage) => Omit<TgEvent, 'seq' | 'watchIds'>): number {
     if (msg.outgoing) return 0
     const takenBy = this.takeoverOf(msg.chatId)
+    const desk = this.#deskFor(msg.chat)
     let delivered = 0
     for (const s of this.#sessions.values()) {
+      if (desk !== null && s.desk !== desk) continue
       const hits = [...s.watches.values()].filter(
         w =>
           w.chatId === msg.chatId &&
@@ -308,11 +366,12 @@ export class SessionHub {
     return delivered
   }
 
-  /** Forgets sessions whose proxy has been gone longer than the grace period. */
+  /** Forgets sessions whose proxy has been gone longer than the grace period. A desk is kept: its next proxy picks it up. */
   sweep(): string[] {
     const gone: string[] = []
     const now = this.#now()
     for (const s of this.#sessions.values()) {
+      if (s.desk !== null) continue
       if (s.proxy === null && s.disconnectedAt !== null && now - s.disconnectedAt > this.#graceMs) {
         for (const m of s.monitors) (m as { close?: () => void }).close?.()
         this.#sessions.delete(s.id)
@@ -332,6 +391,7 @@ export class SessionHub {
       monitors: s.monitors.size,
       watches: s.watches.size,
       pending: s.queue.length,
+      ...(s.desk !== null ? { desk: s.desk } : {}),
     }))
   }
 

@@ -1397,6 +1397,15 @@ export class Service {
       if (store.writesRefused()) lines.push('Writes: REFUSED (no valid config.json since the daemon started). Reading still works; fix config.json and it reloads by itself.')
       const watches = hub.watches(sid)
       lines.push(`This session: ${sid}`)
+      const desk = hub.deskOf(sid)
+      if (desk) {
+        const owned = store.get().desks[desk]?.chats ?? []
+        lines.push(
+          owned.length
+            ? `Desk: ${desk}. Only this session hears and sends to its ${owned.length} chat(s): ${owned.map(r => fieldName(String(r))).join(', ')}. Watch them to hear them.`
+            : `Desk: ${desk}, but config.json lists no chats under desks.${desk}, so it owns none.`,
+        )
+      }
       lines.push(
         `Delivery: ${hub.isChannel(sid) ? 'channel push' : hub.monitorCount(sid) > 0 ? 'Monitor connected' : 'nothing listening (messages queue up)'}`,
       )

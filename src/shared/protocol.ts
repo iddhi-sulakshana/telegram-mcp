@@ -203,6 +203,8 @@ export interface UiSession {
   monitors: number
   pending: number
   watches: WatchSpec[]
+  /** The desk this session holds, if any. */
+  desk?: string
 }
 
 /**
@@ -332,7 +334,8 @@ export interface ToolResult {
 // ---- bridge protocol: per-session MCP proxy <-> daemon, JSON over one WebSocket ----
 
 export type ClientMessage =
-  | { t: 'hello'; sessionId: string; label: string; channel: boolean; watches: WatchSpec[] }
+  /** `desk`: the proxy was started with --desk; it then speaks as that desk's session (shared/desks.ts). */
+  | { t: 'hello'; sessionId: string; label: string; channel: boolean; watches: WatchSpec[]; desk?: string }
   | { t: 'call'; id: number; method: string; params: unknown }
 
 export type ServerMessage =

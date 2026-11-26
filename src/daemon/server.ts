@@ -4,6 +4,7 @@ import type { PageAction } from './pager'
 import type { ServerWebSocket } from 'bun'
 import type { ConfigStore } from '../shared/config'
 import { SEND_MODES } from '../shared/contacts'
+import { deskName, deskSessionId } from '../shared/desks'
 import { UI_FEATURES_HEADER, type ClientMessage, type SendMode, type ServerMessage } from '../shared/protocol'
 import type { Service } from './service'
 import type { SessionHub } from './sessions'
@@ -93,7 +94,8 @@ export function startServer(o: ServerOptions) {
 
       if (url.pathname === '/events') {
         const sid = url.searchParams.get('session')
-        if (!sid || !/^s_[a-z0-9]{8}$/.test(sid)) {
+        // An ordinary session's random id, or a desk's (d_<desk name>).
+        if (!sid || !/^(s_[a-z0-9]{8}|d_[a-z0-9][a-z0-9_-]{0,31})$/.test(sid)) {
           return new Response(authed ? 'bad session id\n' : 'unauthorized\n', { status: authed ? 400 : 401 })
         }
         if (!authed && !sameToken(url.searchParams.get('key'), eventsKey(o.token, sid))) {
@@ -264,16 +266,29 @@ export function startServer(o: ServerOptions) {
           return
         }
         if (msg.t === 'hello') {
-          ws.data.sessionId = msg.sessionId
-          o.hub.attachProxy(msg.sessionId, { label: msg.label, channel: msg.channel, watches: msg.watches ?? [] }, ws)
+          // A proxy started with --desk speaks as the desk's one session; a name that isn't valid is ignored.
+          const desk = deskName(msg.desk)
+          const sid = desk ? deskSessionId(desk) : msg.sessionId
+          ws.data.sessionId = sid
+          o.hub.attachProxy(sid, { label: msg.label, channel: msg.channel, watches: msg.watches ?? [], desk }, ws)
           send(ws, { t: 'welcome', telegram: o.tg.state() })
-          o.log(`session ${msg.sessionId} connected (${msg.label}${msg.channel ? ', channel' : ''})`)
+          o.log(`session ${sid} connected (${msg.label}${msg.channel ? ', channel' : ''}${desk ? `, desk ${desk}` : ''})`)
           return
         }
         if (msg.t === 'call') {
           const sid = ws.data.sessionId
           if (!sid) {
             send(ws, { t: 'result', id: msg.id, ok: false, error: 'say hello first' })
+            return
+          }
+          if (!o.hub.isCurrentProxy(sid, ws)) {
+            const desk = o.hub.deskOf(sid)
+            send(ws, {
+              t: 'result',
+              id: msg.id,
+              ok: false,
+              error: `Another Claude session now holds desk "${desk}" (it started later with --desk ${desk}). This session no longer acts for that desk: nothing was done. Only one session should hold a desk; close this one or start it without --desk.`,
+            })
             return
           }
           o.service

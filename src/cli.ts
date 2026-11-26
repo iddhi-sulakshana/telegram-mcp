@@ -33,7 +33,8 @@ const HELP = `tgmcp ${VERSION}: always-on Telegram daemon + per-session MCP brid
   tgmcp call <tool> [json]   call a tool as a one-off session, e.g. tgmcp call telegram_get_rules
   tgmcp mcp-add       print the command that registers the MCP server with Claude Code
   tgmcp daemon        run the daemon in the foreground
-  tgmcp mcp [--channel]  stdio MCP server (Claude Code starts this, one per session)
+  tgmcp mcp [--channel] [--desk <name>]  stdio MCP server (Claude Code starts this, one per session);
+                         --desk makes this session hold that desk (config.json "desks")
   tgmcp version       print the version
 
 Files live in ${getPaths().home} (override with TELEGRAM_MCP_HOME). Port ${getPort()} (TELEGRAM_MCP_PORT).
@@ -386,7 +387,13 @@ switch (cmd) {
   }
   case 'mcp': {
     const { runProxy } = await import('./mcp/proxy')
-    await runProxy({ channel: rest.includes('--channel') || process.env.TELEGRAM_MCP_CHANNEL === '1' })
+    const { deskName } = await import('./shared/desks')
+    // --desk <name> (or TELEGRAM_MCP_DESK): this session holds that desk. A name that isn't valid is ignored.
+    const at = rest.indexOf('--desk')
+    const asked = at >= 0 ? rest[at + 1] : process.env.TELEGRAM_MCP_DESK
+    const desk = deskName(asked)
+    if (asked !== undefined && !desk) process.stderr.write(`[telegram-mcp] ignoring desk name "${asked}": use 1 to 32 lowercase letters, digits, - and _\n`)
+    await runProxy({ channel: rest.includes('--channel') || process.env.TELEGRAM_MCP_CHANNEL === '1', desk })
     break
   }
   case 'install': {
